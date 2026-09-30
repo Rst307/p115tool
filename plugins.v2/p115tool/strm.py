@@ -61,3 +61,29 @@ class StrmManager:
         finally:
             if temp and temp.exists(): temp.unlink()
         return str(target)
+
+    def remove_owned(self, old_path, new_path, token):
+        old, new = Path(old_path), Path(new_path)
+        if old.resolve() == new.resolve():
+            return 'SAME_PATH'
+        if (old == new or old.suffix.lower() != '.strm' or old.is_symlink()
+                or not old.resolve().is_relative_to(self.root)
+                or not new.resolve().is_relative_to(self.root)):
+            return 'RETAINED'
+        content = self.config.playback_url(token) + '\n'
+        if not new.is_file() or new.is_symlink() or new.read_text('utf-8') != content:
+            return 'RETAINED'
+        if not old.exists():
+            return 'ABSENT'
+        if not old.is_file() or old.read_text('utf-8') != content:
+            return 'RETAINED'
+        old.unlink()
+        # Only empty directories beneath the configured output root are removed.
+        parent = old.parent
+        while parent != self.root and parent.resolve().is_relative_to(self.root):
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+        return 'DONE'

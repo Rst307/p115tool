@@ -93,7 +93,12 @@ class P115ClientManager:
             return '/'
         response = check_response(self.call('fs_files', {
             'cid': str(cid), 'offset': 0, 'limit': 1, 'cur': 1, 'show_dir': 1}))
+        return self._directory_path(response, str(cid))
+
+    def _directory_path(self, response, cid):
         trail = response.get('path')
+        if cid == '0' and not trail:
+            return '/'
         if (not isinstance(trail, list) or not trail
                 or not all(isinstance(item, dict) for item in trail)
                 or str(trail[-1].get('cid')) != str(cid)):
@@ -113,7 +118,7 @@ class P115ClientManager:
             if not isinstance(name, str) or len(safe_parts(name)) != 1:
                 raise SafetyError('Invalid directory ancestor name')
             parts.append(name)
-        if not parts:
+        if not parts and cid != '0':
             raise SafetyError('Directory ancestors unavailable')
         return '/' + '/'.join(parts)
 
@@ -122,6 +127,7 @@ class P115ClientManager:
         seen = set()
         while True:
             resp = check_response(self.call("fs_files", {"cid": cid, "offset": offset, "limit": 1000, "cur": 1, "show_dir": 1}))
+            directory = self._directory_path(resp, str(cid))
             # fs_files silently falls back to root for a non-existing directory.
             if str(cid) != "0":
                 trail = resp.get("path", [])
@@ -131,7 +137,11 @@ class P115ClientManager:
             if not isinstance(rows, list):
                 raise RemoteError("Malformed directory response")
             for row in rows:
-                file = normalize_file(row, str(cid))
+                name = row.get('n') or row.get('fn') or row.get('file_name') or row.get('name') or row.get('category_name')
+                from .strm import safe_parts
+                if not isinstance(name, str) or len(safe_parts(name)) != 1:
+                    raise SafetyError('Invalid listed file name')
+                file = normalize_file(row, str(cid), directory.rstrip('/') + '/' + name)
                 if file.file_id in seen:
                     raise RemoteError("Directory changed while paging; retry scan")
                 seen.add(file.file_id)

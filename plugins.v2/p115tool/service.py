@@ -32,7 +32,10 @@ class Service:
                     file_id TEXT PRIMARY KEY,token TEXT UNIQUE NOT NULL,pickcode TEXT NOT NULL,
                     name TEXT NOT NULL,size INTEGER NOT NULL,sha1 TEXT NOT NULL,parent_id TEXT NOT NULL,
                     relative_path TEXT NOT NULL,strm_path TEXT);
-                    CREATE TABLE IF NOT EXISTS strm_state (id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);''')
+                    CREATE TABLE IF NOT EXISTS strm_state (id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS strm_relocations (
+                    file_id TEXT NOT NULL,old_path TEXT NOT NULL,new_path TEXT NOT NULL,state TEXT NOT NULL,
+                    PRIMARY KEY(file_id,old_path));''')
                 # Upgrade only ordinary, retained sources. Old share/cache mappings
                 # and all old jobs/checkpoints are preserved in storage but not used.
                 tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -78,7 +81,9 @@ class Service:
     def generate_all(self):
         state={'state':'RUNNING','found':0,'generated':0,'failed':0,'error':None}
         self._save_state(state)
-        seen_files=set(); seen_dirs=set()
+        seen_files=set(); seen_dirs=set(); outputs={}
+        state['relocated']=0
+        state['paths']=[]
         try:
             for source in self.config.source_cids:
                 # Include ancestors even when the selected CID is a category or
@@ -102,24 +107,58 @@ class Service:
                         if Path(file.name).suffix.lower() not in self.config.media_extensions or file.file_id in seen_files: continue
                         seen_files.add(file.file_id); state['found']+=1
                         try:
+                            actual_path=file.path
                             if not file.pickcode:
                                 detail=self.client.stat(file.file_id)
                                 if detail.is_dir or (detail.file_id,detail.name,detail.size,detail.parent_id)!=(file.file_id,file.name,file.size,cid) or (file.sha1 and detail.sha1!=file.sha1): raise SafetyError('File changed')
                                 file=detail
                             if not file.pickcode: raise SafetyError('Missing pickcode')
-                            destination=classify(prefix,path,**({'recognizer':self.recognizer} if self.recognizer else {}))
+                            destination=classify('/' if actual_path else prefix,actual_path.lstrip('/') if actual_path else path,**({'recognizer':self.recognizer} if self.recognizer else {}))
+                            previous=self.query('SELECT strm_path FROM strm_files WHERE file_id=?',(file.file_id,),one=True)
                             token=self.register(file,destination)
                             output=self.strm.generate(destination,token)
+                            if previous and previous['strm_path'] and previous['strm_path']!=output:
+                                if self.relocate(file.file_id,previous['strm_path'],output,token)=='DONE':
+                                    state['relocated']+=1
                             self.query('UPDATE strm_files SET strm_path=? WHERE file_id=?',(output,file.file_id))
+                            outputs[self.config.playback_url(token)+'\n']=(file.file_id,output,token)
+                            if len(state['paths'])<10:
+                                state['paths'].append({'source':actual_path or prefix.rstrip('/')+'/'+path,'output':output})
                             state['generated']+=1
                         except Exception as exc:
                             state['failed']+=1
                             state['error']='OUTPUT_CONFLICT' if isinstance(exc,SafetyError) else 'FILE_GENERATION_FAILED'
                         self._save_state(state)
             state['state']='DONE' if not state['failed'] else 'PARTIAL'
+            if state['state']=='DONE':
+                # Earlier versions updated strm_path but left their old output
+                # behind. Only exact stable-URL duplicates of files successfully
+                # generated this round, with the same filename, are candidates.
+                for old in self.strm.root.rglob('*.strm'):
+                    if old.is_symlink() or not old.resolve().is_relative_to(self.strm.root):
+                        continue
+                    try: match=outputs.get(old.read_text('utf-8'))
+                    except (OSError,UnicodeError): continue
+                    if not match: continue
+                    fid,new,token=match
+                    if old==Path(new) or old.name!=Path(new).name: continue
+                    if self.relocate(fid,str(old),new,token)=='DONE': state['relocated']+=1
         except InterruptedError: state['state']='INTERRUPTED'
         except Exception: state['state']='FAILED'; state['error']='SCAN_FAILED'
         self._save_state(state)
+
+    def relocate(self,fid,old,new,token):
+        existing=self.query('SELECT state FROM strm_relocations WHERE file_id=? AND old_path=?',(fid,old),one=True)
+        if existing:
+            return None  # PENDING after interruption and UNKNOWN are never replayed.
+        # Commit the intent before touching an older output; store no credentials.
+        self.query('INSERT INTO strm_relocations VALUES(?,?,?,?)',(fid,old,new,'PENDING'))
+        try:
+            state=self.strm.remove_owned(old,new,token)
+        except Exception:
+            state='UNKNOWN'
+        self.query('UPDATE strm_relocations SET state=? WHERE file_id=? AND old_path=?',(state,fid,old))
+        return state
 
     def register(self,file,path):
         with self._lock:
