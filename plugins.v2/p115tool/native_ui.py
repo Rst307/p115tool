@@ -1,5 +1,6 @@
 """MoviePilot PageRender events: host-login auth, no embedded management key."""
 import hmac
+from importlib import import_module
 from fastapi import Depends, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 from .models import SafetyError, ToolError
@@ -8,11 +9,21 @@ from .browser import VirtualBrowser
 
 def routes(plugin):
     try:
-        from app.db.user_oper import get_current_active_superuser_async
-    except ImportError:
+        user_oper = import_module('app.db.user_oper')
+    except ModuleNotFoundError as exc:
+        if exc.name not in {'app', 'app.db', 'app.db.user_oper'}:
+            raise RuntimeError('MoviePilot administrator authentication could not load') from None
         return []  # No host auth means no native route, including standalone mode.
+    except ImportError:
+        raise RuntimeError('MoviePilot administrator authentication could not load') from None
 
-    async def administrator(user=Depends(get_current_active_superuser_async)):
+    host_administrator = getattr(user_oper, 'get_current_active_superuser_async', None)
+    if not callable(host_administrator):
+        host_administrator = getattr(user_oper, 'get_current_active_superuser', None)
+    if not callable(host_administrator):
+        raise RuntimeError('MoviePilot administrator authentication is unavailable')
+
+    async def administrator(user=Depends(host_administrator)):
         if getattr(user, 'is_superuser', False) is not True or getattr(user, 'is_active', False) is not True:
             raise HTTPException(403, 'Active MoviePilot administrator required')
 

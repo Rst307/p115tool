@@ -1,18 +1,18 @@
 {
   "files": {
-    "__federation_expose_Config-51smSevO.js": "65d224afded6d87363b92716e2aadb7f7ed67058ae339567b14e69e534bc682f",
-    "__federation_expose_Page-DKyow_6C.css": "6e74b8766baf48c6b96ccf2fc5668f9c89564169d854868d9c73293e5077f1c9",
-    "__federation_expose_Page-DT7cnDG_.js": "77abac89bb8d73a5f7a0080bd4bee270dd766f08f7b80ee9364a305c26b9adaa",
+    "__federation_expose_Config-BhSN2X_J.js": "a54a8ec38e545a7fe95932279ac4976ca99bee8196b69e9e4617967604f5e794",
+    "__federation_expose_Page-Dif5URXR.js": "91bcccf7efa61ac2ecae9782a7b1d63811130bdb73209be074cbd611886d5991",
+    "__federation_expose_Page-jXDF-lHr.css": "5e0444bd95f19adf3e3ec85107f68bf8d637eb1c51ec75e19285877b30b7c473",
     "__federation_fn_import-E6wRZccp.js": "11a2d68813601dffb4a4bb619cabf25526a7a445b054e418100e24128f6bdca2",
-    "host-BJ1Dc0JQ.js": "133d171e6ac25dbafc31f68aaf94680d1e52091eb7400658502c874ff71fae57",
-    "remoteEntry.js": "c7cbcc1b07a666fbfe60be58f6895e176d572faba511cc865fc8dfe7da04b5ae"
+    "host-DyM5vinD.js": "b4cdeaa30c6b4b51091f436045a08685510ca635a4109d5b3373e46f502474d3",
+    "remoteEntry.js": "4f250a14c393aa201d4220718fd057a4f65a1b42de17fc9101e129fc998ca408"
   },
   "sources": {
     "frontend/package-lock.json": "9fccb33dde7435c7fbd73b4a33f3b004c580ded3c57dd7fd4b9ac9cbe44bbb90",
     "frontend/vite.config.js": "8466c6e1a41893b25501139906a86a8d932bd5d51cccc102782a58b8a6c5f3a0",
-    "frontend/src/Config.vue": "f63cab431bad9ba67aa35d0827b6a7978435203f52cb0813f9ecb64ab2017114",
-    "frontend/src/host.js": "1ccd450e00398379da074c5210d106fd6304c6a024963fcd8772d638230fe535",
+    "frontend/src/Config.vue": "25fe806b34c466a5a1239fb4479f8ef4b8ceea6497f87c11aa4bc63dee8b1481",
+    "frontend/src/host.js": "45f9ea81be46a0381e542288710aca443cbb10f83cb7696b23c1fb0c500396f0",
     "frontend/src/main.js": "60929e90fdb9d5090b51b772a517645b8da18e347a2f0362de34be7bc7fae3a1",
-    "frontend/src/Page.vue": "18490105481998fccae9b91de31cd0b7c416d1c0329008e25641f166036ae6f2"
+    "frontend/src/Page.vue": "0f1de142d246f47fc96170ecb4451f1ca77e0698a5d4fb55ca783de2a5e0b31b"
   }
 }

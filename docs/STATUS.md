@@ -4,6 +4,8 @@
 
 ## 本轮验证
 
+- 0.1.2原生404排查增量：全量`unittest discover -s tests -v`为264项通过（131.383秒，输出test-results.txt）；前端`npm.cmd test`为3项通过，Vue构建通过，原生安装包已生成在`dist/moviepilot-0.1.2/`。兼容同步／异步管理员鉴权，宿主鉴权加载异常不再静默遗漏接口；页面按HTTP状态显示脱敏错误。用户v2.15.6／0.1.1实例的404尚未复核，不以离线复现推断实际根因，详见[NATIVE_404.md](NATIVE_404.md)。
+
 - `.\.venv\Scripts\python.exe -m unittest discover -s tests -v`：253项通过（Python3.12.14），完整输出见工作区test-results.txt。此后新增停止期间等待播放请求的竞态用例，最新宿主生命周期定向回归8项通过；当前测试集254项，下一次全量需包含新增用例。
 - `test_core.py`：真实 SQLite／文件系统 + 可控远端客户端，覆盖稳定token、路径保护、归档、Range门槛、删除对账、转存和缓存租约。
 - `test_api.py`：FastAPI TestClient，覆盖302无视频代理、管理鉴权、二次确认、状态码和Webhook隔离。
@@ -98,7 +100,7 @@
 
 ## 最近增量
 
-阶段1宿主契约增量：已在用户提供的实例观察MoviePilot v2.15.6／Debian12，P115Tool尚未安装；用户负责真实插件验收，开发完成后发布到Rst307账号（仓库名待定）。配置整数字符串规范化、严格布尔／JSON重复键校验、无效配置保留运行服务、有效替换失败回退、在途API等待和停止资源释放已补。新增原生目录ZIP、仓库索引／plugins.v2结构、可复现构建及SHA256清单，不以wheel替代安装。详细证据与兼容矩阵见[HOST_COMPATIBILITY.md](HOST_COMPATIBILITY.md)。原生配置与详情页真实验收仍待完成；阶段2动态管理将使用宿主Vue联邦，不假设PageRender固定params能提交输入。
+阶段1宿主契约增量：目标MoviePilot v2.15.6，真实插件验收仍需部署者完成。配置整数字符串规范化、严格布尔／JSON重复键校验、无效配置保留运行服务、有效替换失败回退、在途API等待和停止资源释放已补。新增原生目录ZIP、仓库索引／plugins.v2结构、可复现构建及SHA256清单，不以wheel替代安装。详细证据与兼容矩阵见[HOST_COMPATIBILITY.md](HOST_COMPATIBILITY.md)。原生配置与详情页真实验收仍待完成；阶段2动态管理将使用宿主Vue联邦，不假设PageRender固定params能提交输入。
 
 持久队列与操作对账详见 [RECOVERY.md](RECOVERY.md)。测试覆盖实际子进程退出但没有执行真实网盘写操作。完整目标仍未完成。
 
