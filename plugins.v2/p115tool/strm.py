@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import re
 import tempfile
+import hashlib
 from .models import SafetyError
 
 TYPES={'电影':'电影','Movies':'电影','movies':'电影','Movie':'电影','电视剧':'电视剧','TV':'电视剧','TV Shows':'电视剧','剧集':'电视剧','动漫':'动漫'}
@@ -42,22 +43,36 @@ class StrmManager:
         self.root=Path(config.strm_dir).resolve()
         self.root.mkdir(parents=True,exist_ok=True)
 
-    def generate(self,relative,token):
+    def generate(self,relative,token,expected_digest=None,before_replace=None):
         parts=safe_parts(relative)
         target=self.root.joinpath(*parts[:-1],parts[-1]+'.strm')
         if target.is_symlink() or not target.resolve().is_relative_to(self.root): raise SafetyError('Unsafe output target')
         target.parent.mkdir(parents=True,exist_ok=True)
         if not target.parent.resolve().is_relative_to(self.root): raise SafetyError('Unsafe output parent')
         content=self.config.playback_url(token)+'\n'
+        replacing=False
+        original=None
         if target.exists():
-            if target.read_text('utf-8')!=content: raise SafetyError('Existing STRM differs')
-            return str(target)
+            original=target.read_bytes()
+            if target.read_text('utf-8')==content: return str(target)
+            if not expected_digest or hashlib.sha256(original).hexdigest()!=expected_digest:
+                raise SafetyError('Existing STRM differs')
+            replacing=True
         temp=None
         try:
-            with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',dir=target.parent,delete=False) as output:
+            with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',newline='\n',dir=target.parent,delete=False) as output:
                 temp=Path(output.name); output.write(content); output.flush(); os.fsync(output.fileno())
-            # Atomic create without overwriting a file created concurrently.
-            os.link(temp,target)
+            if replacing:
+                # Recheck ownership immediately before the atomic replacement.
+                if target.is_symlink() or not target.resolve().is_relative_to(self.root) or target.read_bytes()!=original:
+                    raise SafetyError('Existing STRM changed')
+                if before_replace: before_replace()
+                if target.is_symlink() or not target.resolve().is_relative_to(self.root) or target.read_bytes()!=original:
+                    raise SafetyError('Existing STRM changed after checkpoint')
+                os.replace(temp,target)
+            else:
+                # Atomic create without overwriting a file created concurrently.
+                os.link(temp,target)
         finally:
             if temp and temp.exists(): temp.unlink()
         return str(target)

@@ -5,6 +5,8 @@ import json
 import secrets
 import sqlite3
 import threading
+import hashlib
+from urllib.parse import urlsplit
 from .client import P115ClientManager
 from .models import SafetyError, MissingFile, ToolError
 from .strm import StrmManager, classify, safe_parts
@@ -35,7 +37,12 @@ class Service:
                     CREATE TABLE IF NOT EXISTS strm_state (id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);
                     CREATE TABLE IF NOT EXISTS strm_relocations (
                     file_id TEXT NOT NULL,old_path TEXT NOT NULL,new_path TEXT NOT NULL,state TEXT NOT NULL,
-                    PRIMARY KEY(file_id,old_path));''')
+                    PRIMARY KEY(file_id,old_path));
+                    CREATE TABLE IF NOT EXISTS strm_output_proofs (
+                    path TEXT PRIMARY KEY,file_id TEXT NOT NULL,digest TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS strm_address_updates (
+                    id INTEGER PRIMARY KEY,path TEXT NOT NULL,old_digest TEXT NOT NULL,
+                    new_digest TEXT NOT NULL,state TEXT NOT NULL);''')
                 # Upgrade only ordinary, retained sources. Old share/cache mappings
                 # and all old jobs/checkpoints are preserved in storage but not used.
                 tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -116,7 +123,29 @@ class Service:
                             destination=classify('/' if actual_path else prefix,actual_path.lstrip('/') if actual_path else path,**({'recognizer':self.recognizer} if self.recognizer else {}))
                             previous=self.query('SELECT strm_path FROM strm_files WHERE file_id=?',(file.file_id,),one=True)
                             token=self.register(file,destination)
-                            output=self.strm.generate(destination,token)
+                            target=self.strm.root.joinpath(*safe_parts(destination+'.strm'))
+                            proof=self.query('SELECT * FROM strm_output_proofs WHERE path=?',(str(target),),one=True)
+                            digest=proof['digest'] if proof and proof['file_id']==file.file_id else None
+                            if not digest and previous and previous['strm_path'] and Path(previous['strm_path']).resolve()==target.resolve():
+                                digest=self.legacy_loopback_digest(target,token)
+                            checkpoint=[]
+                            def before_replace():
+                                pending=self.query("SELECT id FROM strm_address_updates WHERE path=? AND state IN ('PENDING','UNKNOWN')",(str(target),),one=True)
+                                if pending: raise SafetyError('Address update outcome unresolved')
+                                self.query('INSERT INTO strm_address_updates(path,old_digest,new_digest,state) VALUES(?,?,?,?)',
+                                    (str(target),digest,hashlib.sha256((self.config.playback_url(token)+'\n').encode('utf-8')).hexdigest(),'PENDING'))
+                                checkpoint.append(self.query('SELECT max(id) id FROM strm_address_updates',one=True)['id'])
+                            try:
+                                output=self.strm.generate(destination,token,expected_digest=digest,before_replace=before_replace)
+                            except Exception:
+                                if checkpoint: self.query("UPDATE strm_address_updates SET state='UNKNOWN' WHERE id=?",(checkpoint[0],))
+                                raise
+                            written=Path(output).read_bytes()
+                            if written.decode('utf-8').replace('\r\n','\n')!=self.config.playback_url(token)+'\n':
+                                raise SafetyError('Output changed before ownership recording')
+                            self.query('INSERT INTO strm_output_proofs VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET file_id=excluded.file_id,digest=excluded.digest',
+                                (output,file.file_id,hashlib.sha256(written).hexdigest()))
+                            if checkpoint: self.query("UPDATE strm_address_updates SET state='DONE' WHERE id=?",(checkpoint[0],))
                             if previous and previous['strm_path'] and previous['strm_path']!=output:
                                 if self.relocate(file.file_id,previous['strm_path'],output,token)=='DONE':
                                     state['relocated']+=1
@@ -159,6 +188,24 @@ class Service:
             state='UNKNOWN'
         self.query('UPDATE strm_relocations SET state=? WHERE file_id=? AND old_path=?',(state,fid,old))
         return state
+
+    def legacy_loopback_digest(self,target,token):
+        # Narrow compatibility repair for old plugin output. No arbitrary edited
+        # URL is adopted: recorded path, verified source, exact token and the old
+        # default loopback endpoints are all required by the caller and here.
+        if target.is_symlink() or not target.resolve().is_relative_to(self.strm.root) or not target.is_file():
+            return None
+        content=target.read_bytes()
+        try:
+            value=content.decode('utf-8').replace('\r\n','\n')
+            parsed=urlsplit(value.rstrip('\n'))
+            if (value!=parsed.geturl()+'\n' or parsed.scheme!='http'
+                    or parsed.netloc not in ('127.0.0.1:8000','localhost:8000','127.0.0.1:3000','localhost:3000')
+                    or parsed.path!='/api/v1/plugin/P115Tool/play/'+token or parsed.query or parsed.fragment):
+                return None
+        except (ValueError,UnicodeError):
+            return None
+        return hashlib.sha256(content).hexdigest()
 
     def register(self,file,path):
         with self._lock:
