@@ -166,6 +166,9 @@ class DurableJobs:
                 row = dict(row)
                 db.execute("UPDATE jobs SET state='RUNNING',attempts=attempts+1,updated_at=? WHERE id=? AND state='PENDING'", (time.time(), row['id']))
             try:
+                self.db.log('job', 'RUNNING', detail=f"job_id={row['id']}; kind={row['kind']}")
+                from .activity import activity
+                activity('任务开始', f"任务ID={row['id']} 类型={row['kind']}")
                 payload = self.validate(row['kind'], json.loads(row['payload']))
                 with self.service._maintenance:
                     self.service.available()
@@ -176,6 +179,8 @@ class DurableJobs:
                 error = type(exc).__name__ + ': operation failed; inspect durable checkpoints'
             self.db.execute('UPDATE jobs SET state=?,error=?,updated_at=? WHERE id=?', (state, error, time.time(), row['id']))
             self.db.log('job', state, detail=f"job_id={row['id']}; kind={row['kind']}")
+            from .activity import activity
+            activity('任务结束', f"{state} 任务ID={row['id']} 类型={row['kind']}")
             return self.get(row['id'])
         finally:
             self._dispatch.release()

@@ -1,17 +1,17 @@
 {
   "files": {
-    "__federation_expose_Config-DhwUT4rc.js": "54dcd9ea19bc38334752d373de04c5d9e377d5da0e021574012110d45a7563ec",
+    "__federation_expose_Config-P-Rgauc_.js": "f9e445f76c8c2719f9825c31a6b116e8021086482fc9ac6a49f862dfbd1e0205",
     "__federation_expose_Page-6Nuz7Z_E.js": "f8e1f7158b708324e0c9c27aae64ce3d36d8218d7a371718f6a14798c4f1ba72",
     "__federation_expose_Page-jXDF-lHr.css": "5e0444bd95f19adf3e3ec85107f68bf8d637eb1c51ec75e19285877b30b7c473",
     "__federation_fn_import-E6wRZccp.js": "11a2d68813601dffb4a4bb619cabf25526a7a445b054e418100e24128f6bdca2",
     "host-BftUK10E.js": "31ccda553e148a283bcdb63abd46caff1f3da704aa3eef74495f8be482914f97",
-    "remoteEntry.js": "81fa1e23f683cf0647abb48dbfbdca9acbc345eb1ce194b067a62ee323233857"
+    "remoteEntry.js": "64c187fb092dc68cdfbeb3aaefc5e75143dde01d4404e107a4f68153f105366b"
   },
   "sources": {
     "frontend/package-lock.json": "9fccb33dde7435c7fbd73b4a33f3b004c580ded3c57dd7fd4b9ac9cbe44bbb90",
     "frontend/vite.config.js": "8466c6e1a41893b25501139906a86a8d932bd5d51cccc102782a58b8a6c5f3a0",
-    "frontend/src/config-schema.json": "03b058c708e4befbc4ecdff59b8ca4e56c9f01a2df6f2a68c1fe674c5a534b1f",
-    "frontend/src/Config.vue": "e4da8d363a8f060abf6456d55e330baf30c60745c857eb2792a0e6a88cb244ef",
+    "frontend/src/config-schema.json": "87dbe352203a65c4f3f9933b80e4a95fbec3fb636cbd098f839b9d0b472b870b",
+    "frontend/src/Config.vue": "1a199eafe8f85cbf2554ef8777c96f4b558b7c180d59b4c2be0488ddb20880fc",
     "frontend/src/host.js": "1b6b3ba9b35180c0b7338c1c464a9fadcaab6259e1a2e47139e2394ef9b60fb6",
     "frontend/src/main.js": "60929e90fdb9d5090b51b772a517645b8da18e347a2f0362de34be7bc7fae3a1",
     "frontend/src/Page.vue": "0f1de142d246f47fc96170ecb4451f1ca77e0698a5d4fb55ca783de2a5e0b31b"

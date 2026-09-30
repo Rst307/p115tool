@@ -96,7 +96,7 @@ def read_data(plugin, payload):
     if not isinstance(payload, dict):
         raise ValueError('Expected object')
     kind = payload.get('kind')
-    shape = {'bootstrap': set(), 'dashboard': set(),
+    shape = {'bootstrap': set(), 'dashboard': set(), 'folders': {'cid', 'offset', 'limit'},
              'media': {'prefix', 'q', 'storage', 'status', 'offset', 'limit'},
              'tree': {'prefix', 'q', 'storage', 'status', 'offset', 'limit'},
              'detail': {'media_id'}, 'groups': {'offset', 'limit'},
@@ -111,6 +111,31 @@ def read_data(plugin, payload):
         if kind == 'bootstrap':
             return {'enabled': plugin.get_state(), 'nonce': plugin._native_nonce,
                     'error': plugin._initialization_error, 'schema': config_schema(plugin)}
+        if kind == 'folders':
+            import re
+            cid = payload.get('cid', '0')
+            if not isinstance(cid, str) or not re.fullmatch(r'[0-9]{1,20}', cid):
+                raise ValueError('Invalid folder identity')
+            from .client import P115ClientManager
+            from .strm import virtual_path
+            def listing(client):
+                items = []
+                for file in client.list_files(cid):
+                    if file.is_dir:
+                        virtual_path('/' + file.name)
+                        items.append({'cid': file.file_id, 'name': file.name})
+                items.sort(key=lambda row: (row['name'].casefold(), row['cid']))
+                return {'items': items[offset:offset+limit], 'total': len(items)}
+            if plugin._service:
+                with plugin._service._maintenance:
+                    return listing(plugin._service.client)
+            if not plugin._config.cookie:
+                raise ToolError('Save account configuration before browsing')
+            client = P115ClientManager(plugin._config)
+            try:
+                return listing(client)
+            finally:
+                client.close()
         service = plugin._service
         if not service:
             raise ToolError('Plugin unavailable')

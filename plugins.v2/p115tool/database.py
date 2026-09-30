@@ -177,6 +177,8 @@ class Database:
     def log(self, operation, state, mid=None, detail=""):
         self.execute("INSERT INTO tasks(media_id,operation,state,detail,created_at) VALUES(?,?,?,?,?)",
                      (mid, operation, state, detail, time.time()))
+        from .activity import activity
+        activity(operation, state, mid)
 
     def metric(self, name, value=1, at=None):
         with self.connect() as db:

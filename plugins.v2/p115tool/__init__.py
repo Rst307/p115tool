@@ -38,7 +38,7 @@ class P115Tool(_PluginBase):
     plugin_name = '115 工具箱'
     plugin_desc = '统一 STRM、302 播放、分享虚拟存储、归档和恢复缓存'
     plugin_icon = 'https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png'
-    plugin_version = '0.1.3'
+    plugin_version = '0.1.4'
     plugin_author = 'Rst307'
     author_url = 'https://github.com/Rst307'
     plugin_config_prefix = 'p115tool_'
@@ -87,6 +87,7 @@ class P115Tool(_PluginBase):
                 if candidate_service:
                     candidate_service.jobs.start()
                 self._config, self._service = candidate, candidate_service
+                logger.info(f'115 工具箱配置生效：启用={candidate.enabled} 扫描目录数={len(candidate.source_cids)} 按类型分类={candidate.strm_by_type} 按类别分类={candidate.strm_by_category}')
                 self._native_nonce = secrets.token_urlsafe(24)
                 self._native_view = {'prefix': '/', 'storage': None, 'offset': 0}
                 self._initialization_error = None
@@ -192,6 +193,7 @@ class P115Tool(_PluginBase):
     def stop_service(self):
         with self._lifecycle:
             if self._service:
+                logger.info('115 工具箱停止服务，等待在途任务结束')
                 self._service.close()
                 self._service = None
 
@@ -199,7 +201,7 @@ class P115Tool(_PluginBase):
         groups = [
             ('基础', [('enabled', '启用插件', 'switch'), ('public_url', 'Emby 可访问的服务地址（不含接口路径）', 'text'), ('data_dir', 'SQLite 数据目录', 'text'), ('statistics_utc_offset', '每日统计UTC偏移（分钟，默认480即UTC+08:00）', 'number')]),
             ('115账户', [('cookie', '115 Cookie（仅本地保存）', 'password'), ('account_status_ttl', '账号状态缓存秒数（1至3600）', 'number')]),
-            ('STRM', [('strm_dir', 'STRM 输出目录', 'text'), ('auto_generate', '自动生成 STRM', 'switch'), ('clean_missing_strm', '完整扫描后清理已确认失效的普通STRM（默认关闭）', 'switch'), ('source_cids_json', '扫描目录 JSON，例如 [{"cid":"123","prefix":"/电影"}]', 'textarea')]),
+            ('STRM', [('strm_dir', 'STRM 输出目录', 'text'), ('auto_generate', '自动生成 STRM', 'switch'), ('strm_by_type', 'STRM按类型分类（电影／电视剧）', 'switch'), ('strm_by_category', 'STRM按类别分类（使用MoviePilot分类规则）', 'switch'), ('clean_missing_strm', '完整扫描后清理已确认失效的普通STRM（默认关闭）', 'switch'), ('source_cids_json', '扫描目录 JSON，例如 [{"cid":"123","prefix":"/电影"}]', 'textarea')]),
             ('302播放', [('playback_prefix', '接口前缀（MoviePilot 请保留默认）', 'text'), ('url_cache_ttl', '直链缓存秒数', 'number'), ('max_concurrency', '最大并发', 'number')]),
             ('虚拟分享', [('share_enabled', '启用分享存储', 'switch'), ('auto_repair_share', '健康检查自动重新分享（默认关闭；保留源/缓存，不删除）', 'switch'), ('share_strategy', '分享策略：auto/file/movie/season', 'text'), ('group_settle_seconds', '整理事件分组等待时间（秒）', 'number'), ('auto_archive', '自动创建并验证分享', 'switch'), ('policies_json', '文件级存储规则 JSON', 'textarea')]),
             ('整理', [('auto_organize_enabled', '启用自动识别整理（默认关闭）', 'switch'), ('organize_root_cid', '115整理目标根目录CID（不可为根目录）', 'text'), ('scan_interval', '目录同步间隔（秒）', 'number'), ('organize_templates_json', '电影/电视剧路径模板 JSON（MOVIE/TV）', 'textarea')]),

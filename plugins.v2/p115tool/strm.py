@@ -27,14 +27,18 @@ class StrmManager:
 
     def target(self, media):
         relative = PurePosixPath(virtual_path(media.virtual_path).lstrip("/"))
+        from .classification import folders
+        classified = folders(self.config, self.db, media)
         # Retain original extension to avoid movie.mkv and movie.mp4 colliding.
-        target = self.root.joinpath(*relative.parts[:-1], relative.name + ".strm")
+        target = self.root.joinpath(*classified, *relative.parts[:-1], relative.name + ".strm")
         if not target.resolve().is_relative_to(self.root):
             raise SafetyError("STRM path escaped output root")
         return target
 
     def generate(self, mid):
         media = self.db.media(mid)
+        from .classification import folders
+        folders(self.config, self.db, media, refresh=True)
         target = self.target(media)
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.parent.resolve().is_relative_to(self.root):
@@ -55,6 +59,7 @@ class StrmManager:
             os.replace(temp, target)
             self.db.execute("UPDATE media SET strm_path=? WHERE id=?", (str(target), mid))
             self.db.metric("strm_generated")
+            self.db.log('strm_generate', 'DONE', mid, 'STRM written atomically')
         finally:
             if temp and temp.exists():
                 temp.unlink()

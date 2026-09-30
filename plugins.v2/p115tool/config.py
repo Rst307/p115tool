@@ -30,6 +30,8 @@ class Config:
     auto_repair_share: bool = False
     auto_delete: bool = False
     auto_generate: bool = True
+    strm_by_type: bool = False
+    strm_by_category: bool = False
     clean_missing_strm: bool = False
     auto_organize_enabled: bool = False
     organize_root_cid: str = ''

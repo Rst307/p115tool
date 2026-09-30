@@ -143,6 +143,7 @@ class Service:
 
     def scan(self, allow_auto_delete=True):
         self.available()
+        self.db.log('scan', 'STARTED', detail=f'roots={len(self.config.source_cids)}')
         counts = {"files": 0, "media": 0, "errors": 0, "missing": 0, "removed_strm": 0, "outside": 0}
         imported = []
         snapshots = []
@@ -157,6 +158,7 @@ class Service:
                     if parent in seen or len(seen) >= 100000:
                         raise SafetyError("Directory cycle or scan limit")
                     seen.add(parent)
+                    self.db.log('scan_directory', 'STARTED', detail=f'directories={len(seen)}; media={counts["media"]}')
                     for file in self.client.list_files(parent):
                         child = path + "/" + file.name
                         if file.is_dir:
@@ -174,6 +176,8 @@ class Service:
                             except (ToolError, ValueError):
                                 counts["errors"] += 1
                                 self.db.log("scan", "FAILED", detail="File import failed; source untouched")
+                    from .activity import activity
+                    activity('扫描进度', f'目录={len(seen)} 文件={counts["files"]} 媒体={counts["media"]} 错误={counts["errors"]}')
                 snapshots.append((cid, seen, observed))
             # Absence in a listing is not deletion evidence. All roots must have
             # completed before independent authenticated per-file reconciliation.
@@ -203,6 +207,8 @@ class Service:
                     counts['errors'] += 1
                     self.db.log('scan_archive','FAILED',mid,'Group or file archive failed')
             self.db.log("scan", "DONE", detail=json.dumps(counts))
+            from .activity import activity
+            activity('扫描完成', f'文件={counts["files"]} 媒体={counts["media"]} 错误={counts["errors"]} 缺失={counts["missing"]}')
         return counts
 
     def verify_share(self, mid, deep=False, ua="p115tool/1.0"):
