@@ -1,19 +1,19 @@
 {
   "files": {
-    "__federation_expose_Config-Bu9AJsty.js": "0e4bf9da80a141e73c3221eab635fe0edafdd062c4b82e843a702d58a10f434d",
-    "__federation_expose_Page-BKSOlvt7.css": "b438f426349d0090b4a5b476112e330469f8820425c5dda212eb77e56bb124bb",
-    "__federation_expose_Page-CWC9G_Ki.js": "6c0773d80d79f92cfcd0420ff26e805fd2298095adfbfc7fb72c356b2b1f28aa",
+    "__federation_expose_Config-BD1EDJJa.js": "1a661d8e6ef94e3cf4399c2ee1233384569bbec4d2d391b5d5a23b2474942595",
+    "__federation_expose_Page-CXAos-YC.css": "c5703f9e6f53e09aa6343f3ba44e0c95e05811c0c610f528fe389dbd5abe256e",
+    "__federation_expose_Page-DMGIvZ12.js": "1d570ea648c60b4efaadd2568ca8358fce6e2f03f7e3ebbad412f2dcacc7dc1e",
     "__federation_fn_import-E6wRZccp.js": "11a2d68813601dffb4a4bb619cabf25526a7a445b054e418100e24128f6bdca2",
     "host-BftUK10E.js": "31ccda553e148a283bcdb63abd46caff1f3da704aa3eef74495f8be482914f97",
-    "remoteEntry.js": "21552687e4b0a9caac144c09b00556bffd0d75cb12cdf59595770c7dfbaf0398"
+    "remoteEntry.js": "dba3be4a1c3d128070e6e6ccb7f2cdc1ccd89edb5d3e6439a6785051f734a205"
   },
   "sources": {
     "frontend/package-lock.json": "9fccb33dde7435c7fbd73b4a33f3b004c580ded3c57dd7fd4b9ac9cbe44bbb90",
     "frontend/vite.config.js": "8466c6e1a41893b25501139906a86a8d932bd5d51cccc102782a58b8a6c5f3a0",
-    "frontend/src/config-schema.json": "53adfc912e79cda5f3b86f5abda035fc5ba7fd52f62ddca7cf8c54ad9173f68f",
+    "frontend/src/config-schema.json": "7090a4527ee6225d88226cc0aae102bee0a47706bed49e183e87f9c5c203706a",
     "frontend/src/Config.vue": "28ea9903352a3787d31b183472d4889e3b78a2a473f42e5d9bab4a3643626641",
     "frontend/src/host.js": "1b6b3ba9b35180c0b7338c1c464a9fadcaab6259e1a2e47139e2394ef9b60fb6",
     "frontend/src/main.js": "60929e90fdb9d5090b51b772a517645b8da18e347a2f0362de34be7bc7fae3a1",
-    "frontend/src/Page.vue": "753b12dc2be7600aad947496633532a8f492ffb1565ea503d78c7869975d47ac"
+    "frontend/src/Page.vue": "33ba64181c7f5d19bfe5c425dcfd89cc7c5112aa4d40d17a030702b5c5358418"
   }
 }

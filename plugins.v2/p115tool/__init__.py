@@ -39,7 +39,7 @@ class P115Tool(_PluginBase):
     plugin_name = '115 工具箱'
     plugin_desc = '统一 STRM、302 播放、分享虚拟存储、归档和恢复缓存'
     plugin_icon = 'https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png'
-    plugin_version = '0.1.5'
+    plugin_version = '0.1.6'
     plugin_author = 'Rst307'
     author_url = 'https://github.com/Rst307'
     plugin_config_prefix = 'p115tool_'
@@ -133,8 +133,11 @@ class P115Tool(_PluginBase):
         if not self.get_state():
             return []
         from apscheduler.triggers.interval import IntervalTrigger
+        from apscheduler.triggers.cron import CronTrigger
+        from datetime import timezone, timedelta
+        hour, minute = map(int, self._config.scan_time.split(':'))
         return [
-            {'id': 'p115tool_scan', 'name': '115 工具箱目录同步', 'trigger': IntervalTrigger(seconds=self._config.scan_interval), 'func': self.run_scan, 'kwargs': {}},
+            {'id': 'p115tool_scan', 'name': '115 工具箱目录同步', 'trigger': CronTrigger(hour=hour, minute=minute, timezone=timezone(timedelta(minutes=self._config.statistics_utc_offset))), 'func': self.run_scan, 'kwargs': {}},
             {'id': 'p115tool_health', 'name': '115 工具箱健康检查', 'trigger': IntervalTrigger(days=1), 'func': self.run_health, 'kwargs': {}},
             {'id': 'p115tool_cleanup', 'name': '115 工具箱缓存清理', 'trigger': IntervalTrigger(minutes=30), 'func': self.run_cleanup, 'kwargs': {}},
             {'id': 'p115tool_deep_health', 'name': '115 工具箱每周分批深度检查', 'trigger': IntervalTrigger(weeks=1), 'func': self.run_deep_health, 'kwargs': {}},
@@ -150,7 +153,7 @@ class P115Tool(_PluginBase):
                     logger.warning('115 工具箱任务失败：%s', name)
 
     def run_scan(self):
-        return self._job('scan', lambda service: service.jobs.enqueue_active('scan'))
+        return self._job('scan', lambda service: service.jobs.enqueue_active('scan', {'allow_delete': False, 'scheduled': True}))
 
     def run_health(self):
         return self._job('health', lambda service: service.jobs.enqueue_active('health'))
@@ -195,11 +198,14 @@ class P115Tool(_PluginBase):
                 kind = {'电影':'MOVIE','电视剧':'TV','Movie':'MOVIE','TV':'TV','MOVIE':'MOVIE'}.get(str(kind))
                 meta = get_value(data, 'meta')
                 season = get_value(meta,'begin_season', get_value(meta,'season'))
-                self._service.jobs.enqueue_transfer({'file_id': fid, 'virtual_path': path,
+                metadata = {'file_id': fid, 'virtual_path': path,
                     'title': get_value(info, 'title'), 'tmdb_id': get_value(info, 'tmdb_id'),
                     'allow_delete': self._config.auto_delete, 'media_type':kind,'season':season,
-                    'category': get_value(info, 'category')})
-                self._service.db.log('transfer', 'QUEUED')
+                    'category': get_value(info, 'category')}
+                metadata = self._service.jobs.validate('transfer', metadata)
+                self._service.db.execute('INSERT INTO settings VALUES(?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value',
+                    (f'transfer_metadata:{fid}', json.dumps(metadata)))
+                self._service.db.log('transfer', 'RECORDED', detail='Metadata recorded; awaiting organized directory scan')
             except Exception:
                 self._service.db.log('transfer', 'FAILED', detail='Transfer processing failed; source remains intact')
                 logger.warning('115 工具箱整理事件处理失败，请检查任务日志')
@@ -215,10 +221,10 @@ class P115Tool(_PluginBase):
         groups = [
             ('基础', [('enabled', '启用插件', 'switch'), ('public_url', 'Emby 可访问的服务地址（不含接口路径）', 'text'), ('data_dir', 'SQLite 数据目录', 'text'), ('statistics_utc_offset', '每日统计UTC偏移（分钟，默认480即UTC+08:00）', 'number')]),
             ('115账户', [('cookie', '115 Cookie（仅本地保存）', 'password'), ('account_status_ttl', '账号状态缓存秒数（1至3600）', 'number')]),
-            ('STRM', [('strm_dir', 'STRM 输出目录', 'text'), ('auto_generate', '自动生成 STRM', 'switch'), ('strm_by_type', 'STRM按类型分类（电影／电视剧）', 'switch'), ('strm_by_category', 'STRM按类别分类（使用MoviePilot分类规则）', 'switch'), ('clean_missing_strm', '完整扫描后清理已确认失效的普通STRM（默认关闭）', 'switch'), ('source_cids_json', '扫描目录 JSON，例如 [{"cid":"123","prefix":"/电影"}]', 'textarea')]),
+            ('STRM', [('strm_dir', 'STRM 输出目录', 'text'), ('auto_generate', '定时扫描后自动生成 STRM（独立任务）', 'switch'), ('strm_by_type', 'STRM按类型分类（电影／电视剧）', 'switch'), ('strm_by_category', 'STRM按类别分类（使用MoviePilot分类规则）', 'switch'), ('clean_missing_strm', '完整扫描后清理已确认失效的普通STRM（默认关闭）', 'switch'), ('source_cids_json', 'MoviePilot整理后目录 JSON，例如 [{"cid":"123","prefix":"/电影"}]', 'textarea')]),
             ('302播放', [('playback_prefix', '接口前缀（MoviePilot 请保留默认）', 'text'), ('url_cache_ttl', '直链缓存秒数', 'number'), ('max_concurrency', '最大并发', 'number')]),
-            ('虚拟分享', [('share_enabled', '启用分享存储', 'switch'), ('auto_repair_share', '健康检查自动重新分享（默认关闭；保留源/缓存，不删除）', 'switch'), ('share_strategy', '分享策略：auto/file/movie/season', 'text'), ('group_settle_seconds', '整理事件分组等待时间（秒）', 'number'), ('auto_archive', '自动创建并验证分享', 'switch'), ('policies_json', '文件级存储规则 JSON', 'textarea')]),
-            ('整理', [('auto_organize_enabled', '委托MoviePilot自动整理（使用宿主整理规则，默认关闭）', 'switch'), ('scan_interval', '目录同步间隔（秒）', 'number')]),
+            ('虚拟分享', [('share_enabled', '启用分享存储', 'switch'), ('auto_repair_share', '健康检查自动重新分享（默认关闭；保留源/缓存，不删除）', 'switch'), ('share_strategy', '分享策略：auto/file/movie/season', 'text'), ('group_settle_seconds', '整理事件分组等待时间（秒）', 'number'), ('auto_archive', '定时扫描后自动创建并验证虚拟分享（保留源，独立任务）', 'switch'), ('policies_json', '文件级存储规则 JSON', 'textarea')]),
+            ('整理后扫描', [('scan_time', '每天统一扫描时间（HH:MM，使用每日统计时区）', 'text')]),
             ('缓存', [('cache_cid', '115 临时缓存目录 CID（不可为根目录）', 'text'), ('cache_max_bytes', '缓存容量上限（字节）', 'number'), ('cache_ttl', '无访问过期时间（秒）', 'number'), ('playback_lease', '播放保护时间（秒，至少等于过期时间）', 'number')]),
             ('安全', [('delete_source', '允许验证后删除源文件至回收站', 'switch'), ('auto_delete', '自动归档后删除源文件（高风险，需同时启用允许删除）', 'switch'), ('api_key', '管理 API Key（32字符以上）', 'password'), ('webhook_key', 'Emby Webhook Key（32字符以上）', 'password')]),
             ('高级', [('request_timeout', '115 请求超时（秒）', 'number'), ('health_batch', '每次健康检查数量', 'number'), ('emby_path_mappings_json', 'Emby目录映射 JSON：emby/local（local须在STRM目录下）', 'textarea'), ('allowed_cdn_suffixes_json', '允许的 CDN 域名后缀 JSON', 'textarea'), ('media_extensions_json', '视频扩展名 JSON', 'textarea')]),

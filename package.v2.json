@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "统一 STRM、302 播放、分享归档与恢复缓存；开发版，真实链路待验收",
     "labels": "115,STRM,媒体管理",
-    "version": "0.1.5",
+    "version": "0.1.6",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.1.6": "MoviePilot正常整理后每天统一扫描；虚拟分享与STRM独立后台任务及手动开始按钮，分享保留源",
       "v0.1.5": "整理委托MoviePilot原生处理链；接收宿主成功／失败结果并生成STRM和归档，移除插件整理模板与远端移动重命名",
       "v0.1.4": "新增115目录选择、STRM按类型与宿主类别分类，以及任务／扫描／STRM脱敏日志",
       "v0.1.3": "修正MoviePilot插件ID重复前缀导致的接口404；新增顶部启用开关、保存并启动／停止及离线配置字段",

@@ -18,7 +18,9 @@ class DurableJobs:
         'transfer': ({'file_id', 'virtual_path', 'title', 'tmdb_id', 'allow_delete', 'media_type', 'season', 'category'}, {'file_id', 'virtual_path'}),
         'archive_policy': ({'media_id', 'allow_delete'}, {'media_id'}),
         'archive_group': ({'media_ids', 'delete'}, {'media_ids'}),
-        'scan': ({'allow_delete'}, set()),
+        'scan': ({'allow_delete', 'scheduled'}, set()),
+        'share_batch': ({'automatic'}, set()),
+        'generate_batch': (set(), set()),
         'health': ({'deep'}, set()),
         'cleanup': (set(), set()),
         'generate': ({'media_id'}, {'media_id'}),
@@ -36,6 +38,7 @@ class DurableJobs:
         self._wake = threading.Event()
         self._thread = None
         self.db.execute("UPDATE jobs SET state='NEEDS_ATTENTION',error='Process interrupted; reconcile remote result before retry',updated_at=? WHERE state='RUNNING'", (time.time(),))
+        self.db.execute("UPDATE jobs SET state='CANCELLED',error='Legacy organize/event archive replaced by organized-directory scan',updated_at=? WHERE state='PENDING' AND kind IN ('auto_organize','archive_policy')", (time.time(),))
 
     def validate(self, kind, payload):
         if kind not in self.SHAPES or not isinstance(payload, dict):
@@ -47,7 +50,7 @@ class DurableJobs:
         if data.get('category') is not None:
             from .organizer import portable_title
             data['category'] = portable_title(data['category'])
-        for name in ('allow_delete', 'delete', 'deep'):
+        for name in ('allow_delete', 'delete', 'deep', 'scheduled', 'automatic'):
             if name in data and not isinstance(data[name], bool):
                 raise ValueError('Boolean job flags must be actual booleans')
         for name in ('media_id', 'tmdb_id'):
@@ -192,16 +195,26 @@ class DurableJobs:
         if kind == 'transfer':
             file = service.client.stat(data['file_id'])
             media=service.ingest(file, data['virtual_path'], data.get('title'), data.get('tmdb_id'), allow_auto_delete=data['allow_delete'],
-                defer_archive=True,media_type=data.get('media_type'),season=data.get('season'),category=data.get('category'))
-            if service.config.storage_policy(media.virtual_path,media.size)=='SHARE':
-                self.enqueue('archive_policy',{'media_id':media.id,'allow_delete':data['allow_delete']},delay=service.config.group_settle_seconds)
+                defer_archive=True,defer_generate=True,media_type=data.get('media_type'),season=data.get('season'),category=data.get('category'))
+            # Output creation belongs to the scheduled/manual batch stages.
             return media
         if kind == 'archive_policy':
             return service.groups.policy(data['media_id'],allow_delete=data['allow_delete'])
         if kind == 'archive_group':
             return service.groups.archive(data['media_ids'],delete=data.get('delete',False))
         if kind == 'scan':
-            return service.scan(allow_auto_delete=data['allow_delete'])
+            result = service.scan(allow_auto_delete=False)
+            if result['errors']:
+                raise SafetyError('Directory import incomplete; output stages were not submitted')
+            if data.get('scheduled'):
+                if service.config.share_enabled and (service.config.auto_archive or any(r['storage'] == 'SHARE' for r in service.config.policies)):
+                    self.enqueue_active('share_batch', {'automatic': True})
+                if service.config.auto_generate:
+                    self.enqueue_active('generate_batch')
+            return result
+        if kind in ('share_batch', 'generate_batch'):
+            from .postprocess import run_batch
+            return run_batch(service, kind, automatic=data.get('automatic', False))
         if kind == 'health':
             return service.health(deep=data.get('deep', False))
         if kind == 'cleanup':
@@ -209,7 +222,7 @@ class DurableJobs:
         if kind == 'generate':
             return service.strm.generate(data['media_id'])
         if kind == 'archive':
-            return service.archive(data['media_id'], delete=data.get('delete', False))
+            return service.archive(data['media_id'], delete=data.get('delete', False), generate_strm=data.get('delete', False))
         if kind == 'restore':
             return service.restore(data['media_id'])
         if kind == 'auto_organize':

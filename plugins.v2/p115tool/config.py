@@ -39,6 +39,7 @@ class Config:
     url_cache_ttl: int = 60
     max_concurrency: int = 2
     request_timeout: int = 30
+    scan_time: str = "03:00"
     scan_interval: int = 3600
     health_batch: int = 20
     account_status_ttl: int = 300
@@ -52,6 +53,8 @@ class Config:
         data = deepcopy(dict(data or {}))
         allowed = {f.name for f in fields(cls)}
         cfg = cls(**{k: v for k, v in data.items() if k in allowed})
+        if not isinstance(cfg.scan_time, str) or not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", cfg.scan_time):
+            raise ValueError("scan_time must be HH:MM")
         if type(cfg.account_status_ttl) is not int or not 1 <= cfg.account_status_ttl <= 3600:
             raise ValueError('account_status_ttl must be 1..3600 seconds')
         if cfg.auto_repair_share and not cfg.share_enabled:

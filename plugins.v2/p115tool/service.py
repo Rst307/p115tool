@@ -107,7 +107,7 @@ class Service:
             raise MissingFile("No share source")
         return obj
 
-    def ingest(self, file, path=None, title=None, tmdb_id=None, allow_auto_delete=True, defer_archive=False, media_type=None, season=None, category=None):
+    def ingest(self, file, path=None, title=None, tmdb_id=None, allow_auto_delete=True, defer_archive=False, media_type=None, season=None, category=None, defer_generate=False):
         self.available()
         path = virtual_path(path or file.path or "/" + file.name)
         with self._maintenance:
@@ -120,6 +120,8 @@ class Service:
                 self.db.execute('DELETE FROM missing_sources WHERE media_id=?', (media.id,))
             if media.status == 'BROKEN' and media.error == 'Source missing (scan confirmed)':
                 self.db.transition(media.id, 'DISCOVERED')
+                if media.strm_path and self.strm.verify(media.id):
+                    self.db.transition(media.id, 'READY')
                 media = self.db.media(media.id)
             self.db.execute('INSERT INTO archive_permissions VALUES(?,?,?) ON CONFLICT(media_id) DO UPDATE SET allow_delete=excluded.allow_delete,requested_at=excluded.requested_at',
                 (media.id, int(self.config.auto_delete and allow_auto_delete),time.time()))
@@ -131,7 +133,7 @@ class Service:
                                   'category': portable_title(category), 'provider': 'MoviePilot'}
                 self.db.execute('INSERT INTO settings VALUES(?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value',
                                 (f'strm_classification:{media.id}', json.dumps(classification)))
-            if self.config.auto_generate:
+            if self.config.auto_generate and not defer_generate:
                 self.strm.generate(media.id)
                 # Do not reset a partially completed archive's durable checkpoint.
                 if media.status == "DISCOVERED":
@@ -149,6 +151,7 @@ class Service:
         imported = []
         snapshots = []
         with self._maintenance:
+            self.db.execute('DELETE FROM settings WHERE name IN (?,?)', ('organized_scan_ids', 'organized_scan_roots'))
             for root in self.config.source_cids:
                 cid = str(root.get("cid")) if isinstance(root, dict) else str(root)
                 prefix = root.get("prefix", "/") if isinstance(root, dict) else "/"
@@ -171,7 +174,11 @@ class Service:
                             if Path(file.name).suffix.lower() not in self.config.media_extensions:
                                 continue
                             try:
-                                media = self.ingest(file, child, allow_auto_delete=allow_auto_delete, defer_archive=True)
+                                metadata = self.db.one('SELECT value FROM settings WHERE name=?', (f'transfer_metadata:{file.file_id}',))
+                                metadata = json.loads(metadata['value']) if metadata else {}
+                                # Events supply classification only; enumeration supplies identity/path.
+                                metadata = {k: metadata.get(k) for k in ('title', 'tmdb_id', 'media_type', 'season', 'category')}
+                                media = self.ingest(file, child, allow_auto_delete=False, defer_archive=True, defer_generate=True, **metadata)
                                 imported.append(media.id)
                                 counts["media"] += 1
                             except (ToolError, ValueError):
@@ -184,29 +191,10 @@ class Service:
             # completed before independent authenticated per-file reconciliation.
             from .scanner import reconcile_sources
             reconcile_sources(self, snapshots, counts)
-            if self.config.auto_organize_enabled:
-                for mid in dict.fromkeys(imported):
-                    try:
-                        self.automatic_organize(mid)
-                    except (ToolError,ValueError,OSError):
-                        counts['errors']+=1
-                        self.db.log('scan_organize','FAILED',mid,'Automatic organize incomplete; archive not submitted')
-                # MoviePilot runs organization asynchronously. Do not archive the
-                # original before its TransferComplete event returns the target.
-                imported=[]
-            # Archive only after enumeration succeeds, so all known season/movie
-            # files are ingested before the immutable member snapshot is made.
-            processed = set()
-            for mid in imported:
-                key = self.groups.key(mid)
-                if key in processed:
-                    continue
-                processed.add(key)
-                try:
-                    self.groups.policy(mid, allow_delete=allow_auto_delete)
-                except (ToolError, ValueError):
-                    counts['errors'] += 1
-                    self.db.log('scan_archive','FAILED',mid,'Group or file archive failed')
+            # Publish a batch snapshot only after every directory completed.
+            if not counts['errors']:
+                self.db.execute('INSERT INTO settings VALUES(?,?)', ('organized_scan_ids', json.dumps(list(dict.fromkeys(imported)))))
+                self.db.execute('INSERT INTO settings VALUES(?,?)', ('organized_scan_roots', json.dumps(self.config.source_cids)))
             self.db.log("scan", "DONE", detail=json.dumps(counts))
             from .activity import activity
             activity('扫描完成', f'文件={counts["files"]} 媒体={counts["media"]} 错误={counts["errors"]} 缺失={counts["missing"]}')
@@ -272,10 +260,12 @@ class Service:
                 self.db.transition(media.id, "READY", storage="SHARE")
             return self.db.media(media.id)
 
-    def archive(self, mid, delete=False):
+    def archive(self, mid, delete=False, generate_strm=True):
         self.available()
         if not self.config.share_enabled:
             raise SafetyError("Virtual-share backend is disabled")
+        if delete and not generate_strm:
+            raise SafetyError("Deletion requires the separate STRM safety stage")
         # Global maintenance lock serializes archive/cache deletes with scanning.
         with self._maintenance, self.lock(mid):
             media = self.db.media(mid)
@@ -317,10 +307,11 @@ class Service:
                 self.verify_share(mid, deep=True)
                 self.db.transition(mid, "VERIFIED")
                 stage = "FAILED_STRM"
-                self.strm.generate(mid)
-                if not self.strm.verify(mid):
-                    raise SafetyError("STRM verification failed")
-                self.db.transition(mid, "STRM_CREATED", storage="SHARE")
+                if generate_strm:
+                    self.strm.generate(mid)
+                    if not self.strm.verify(mid):
+                        raise SafetyError("STRM verification failed")
+                    self.db.transition(mid, "STRM_CREATED", storage="SHARE")
                 # Manual deletion requires request confirmation. Automatic deletion
                 # additionally requires the independent auto_delete configuration.
                 if delete:
@@ -594,7 +585,8 @@ class Service:
                             source = self.client.stat(self.normal(mid)["file_id"])
                             if not self.expected(media).matches(source):
                                 raise SafetyError("Normal source identity changed")
-                        self.strm.repair(mid)
+                        if media.strm_path:
+                            self.strm.repair(mid)
                         if media.status == "BROKEN":
                             self.db.transition(mid, "READY")
                         result["healthy"] += 1

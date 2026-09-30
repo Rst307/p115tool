@@ -131,10 +131,12 @@ class ShareGroups:
             if not self.service.strm.verify(mid):
                 raise SafetyError('Group member STRM is not verified')
 
-    def archive(self, ids, delete=False, label='manual'):
+    def archive(self, ids, delete=False, label='manual', generate_strm=True):
         self.service.available()
         if not self.service.config.share_enabled:
             raise SafetyError('Share backend disabled')
+        if delete and not generate_strm:
+            raise SafetyError('Deletion requires STRM safety stage')
         if delete and not self.service.config.delete_source:
             raise SafetyError('Source deletion disabled')
         with self.service._maintenance, ExitStack() as locks:
@@ -170,12 +172,14 @@ class ShareGroups:
                 stage = 'FAILED_STRM'
                 for row in rows:
                     mid = row['media_id']
-                    self.service.strm.generate(mid)
-                    if not self.service.strm.verify(mid):
-                        raise SafetyError('Group STRM failed')
-                    self.db.transition(mid,'STRM_CREATED',storage='SHARE')
+                    if generate_strm:
+                        self.service.strm.generate(mid)
+                        if not self.service.strm.verify(mid):
+                            raise SafetyError('Group STRM failed')
+                        self.db.transition(mid,'STRM_CREATED',storage='SHARE')
                 # Barrier: no source can be deleted before every member passes.
-                self.verify_all(gid)
+                if generate_strm:
+                    self.verify_all(gid)
                 self.state(gid,'VERIFIED')
                 if delete:
                     stage='FAILED_DELETE'

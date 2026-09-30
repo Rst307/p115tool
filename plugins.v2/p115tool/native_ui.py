@@ -216,7 +216,7 @@ def action(plugin, payload):
             VirtualBrowser(service.db).filters(prefix, '', storage, None)
             plugin._native_view = {'prefix': prefix, 'storage': storage, 'offset': offset}
             return {'success': True}
-        if name in ('scan', 'health', 'cleanup'):
+        if name in ('scan', 'health', 'cleanup', 'share_batch', 'generate_batch'):
             if set(payload) - base:
                 raise ValueError('Unexpected field')
             data = {'allow_delete': False} if name == 'scan' else {}
@@ -260,7 +260,7 @@ def page(plugin):
     view = plugin._native_view
     browser = VirtualBrowser(service.db)
     result = browser.tree(view['prefix'], storage=view['storage'], offset=view['offset'], limit=20)
-    controls = [button(plugin, '扫描目录（本次不授权删源）', 'scan'), button(plugin, '健康检查', 'health'),
+    controls = [button(plugin, '立即扫描整理后目录', 'scan'), button(plugin, '开始创建虚拟分享', 'share_batch'), button(plugin, '开始生成STRM', 'generate_batch'), button(plugin, '健康检查', 'health'),
                 button(plugin, '受保护缓存清理', 'cleanup')]
     filters = []
     for label, storage in [('全部存储', None), ('个人盘', 'NORMAL'), ('虚拟分享', 'SHARE'), ('恢复缓存', 'CACHE')]:
@@ -283,8 +283,6 @@ def page(plugin):
             media = service.db.media(mid)
             actions = [button(plugin, '生成STRM', 'generate', media_id=mid),
                        button(plugin, '归档分享（保留源）', 'archive', media_id=mid)]
-            if media.storage_type == 'NORMAL' and not media.source_deleted:
-                actions.append(button(plugin, '委托MoviePilot整理', 'auto_organize', media_id=mid))
             if media.storage_type != 'NORMAL':
                 actions.extend([button(plugin, '恢复缓存', 'restore', media_id=mid),
                                 button(plugin, '转存只读对账', 'restore_reconcile', media_id=mid),
