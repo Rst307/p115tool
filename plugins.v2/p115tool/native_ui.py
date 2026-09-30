@@ -35,7 +35,12 @@ def dispatch(plugin,route,payload):
         service=plugin._service
         if not service: raise ToolError('Service unavailable')
         if route=='action' and payload=={'action':'generate'}: return service.start()
+        if route=='action' and set(payload)=={'action','cids'} and payload['action']=='organize':
+            from .host_transfer import organize
+            return organize(service,payload['cids'])
         if route=='data' and payload=={'kind':'status'}: return service.snapshot()
+        if route=='data' and payload=={'kind':'sources'}:
+            return {'items':[{'cid':source['cid'],'prefix':source['prefix']} for source in service.config.source_cids]}
         if route=='data' and set(payload)=={'kind','cid'} and payload['kind']=='folders':
             cid=payload['cid']
             if not isinstance(cid,str) or not re.fullmatch(r'\d{1,20}',cid): raise ValueError('Invalid folder')
