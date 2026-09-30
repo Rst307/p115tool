@@ -3,10 +3,14 @@ import json
 from .models import SafetyError
 
 
-def run_batch(service, kind, automatic=False):
+def run_batch(service, kind, automatic=False, delete=False):
     service.available()
     if kind == 'share_batch' and not service.config.share_enabled:
         raise SafetyError('Virtual-share backend is disabled')
+    if delete and not service.config.delete_source:
+        raise SafetyError('Source deletion is disabled')
+    if delete and automatic and not service.config.auto_delete:
+        raise SafetyError('Automatic source deletion is disabled')
     snapshot = service.db.one('SELECT value FROM settings WHERE name=?', ('organized_scan_ids',))
     if snapshot is None:
         raise SafetyError('Scan organized directories before starting output tasks')
@@ -45,11 +49,11 @@ def run_batch(service, kind, automatic=False):
                 if media.status == 'DISCOVERED':
                     service.db.transition(mid, 'READY')
             elif key.startswith('file:'):
-                service.archive(mid, delete=False, generate_strm=False)
+                service.archive(mid, delete=delete, generate_strm=delete)
             else:
                 members = [member for member in ids if service.groups.key(member) == key
                            and selected(member)]
-                service.groups.archive(members, delete=False, label=key, generate_strm=False)
+                service.groups.archive(members, delete=delete, label=key, generate_strm=delete)
             done += 1
         except Exception:
             failed += 1

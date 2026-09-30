@@ -39,7 +39,7 @@ class P115Tool(_PluginBase):
     plugin_name = '115 工具箱'
     plugin_desc = '统一 STRM、302 播放、分享虚拟存储、归档和恢复缓存'
     plugin_icon = 'https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png'
-    plugin_version = '0.1.6'
+    plugin_version = '0.1.7'
     plugin_author = 'Rst307'
     author_url = 'https://github.com/Rst307'
     plugin_config_prefix = 'p115tool_'
@@ -223,9 +223,9 @@ class P115Tool(_PluginBase):
             ('115账户', [('cookie', '115 Cookie（仅本地保存）', 'password'), ('account_status_ttl', '账号状态缓存秒数（1至3600）', 'number')]),
             ('STRM', [('strm_dir', 'STRM 输出目录', 'text'), ('auto_generate', '定时扫描后自动生成 STRM（独立任务）', 'switch'), ('strm_by_type', 'STRM按类型分类（电影／电视剧）', 'switch'), ('strm_by_category', 'STRM按类别分类（使用MoviePilot分类规则）', 'switch'), ('clean_missing_strm', '完整扫描后清理已确认失效的普通STRM（默认关闭）', 'switch'), ('source_cids_json', 'MoviePilot整理后目录 JSON，例如 [{"cid":"123","prefix":"/电影"}]', 'textarea')]),
             ('302播放', [('playback_prefix', '接口前缀（MoviePilot 请保留默认）', 'text'), ('url_cache_ttl', '直链缓存秒数', 'number'), ('max_concurrency', '最大并发', 'number')]),
-            ('虚拟分享', [('share_enabled', '启用分享存储', 'switch'), ('auto_repair_share', '健康检查自动重新分享（默认关闭；保留源/缓存，不删除）', 'switch'), ('share_strategy', '分享策略：auto/file/movie/season', 'text'), ('group_settle_seconds', '整理事件分组等待时间（秒）', 'number'), ('auto_archive', '定时扫描后自动创建并验证虚拟分享（保留源，独立任务）', 'switch'), ('policies_json', '文件级存储规则 JSON', 'textarea')]),
+            ('虚拟分享', [('share_enabled', '启用分享存储', 'switch'), ('auto_repair_share', '健康检查自动重新分享（默认关闭；保留源/缓存，不删除）', 'switch'), ('share_strategy', '分享策略：auto/file/movie/season', 'text'), ('group_settle_seconds', '整理事件分组等待时间（秒）', 'number'), ('auto_archive', '定期虚拟分享（每天扫描整理目录；删除由安全开关控制）', 'switch'), ('policies_json', '文件级存储规则 JSON', 'textarea')]),
             ('整理后扫描', [('scan_time', '每天统一扫描时间（HH:MM，使用每日统计时区）', 'text')]),
-            ('缓存', [('cache_cid', '115 临时缓存目录 CID（不可为根目录）', 'text'), ('cache_max_bytes', '缓存容量上限（字节）', 'number'), ('cache_ttl', '无访问过期时间（秒）', 'number'), ('playback_lease', '播放保护时间（秒，至少等于过期时间）', 'number')]),
+            ('缓存', [('restore_original', '虚拟资源转存回原文件夹（永久保存，默认开启）', 'switch'), ('cache_cid', '115 临时缓存目录 CID（不可为根目录）', 'text'), ('cache_max_bytes', '缓存容量上限（字节）', 'number'), ('cache_ttl', '无访问过期时间（秒）', 'number'), ('playback_lease', '播放保护时间（秒，至少等于过期时间）', 'number')]),
             ('安全', [('delete_source', '允许验证后删除源文件至回收站', 'switch'), ('auto_delete', '自动归档后删除源文件（高风险，需同时启用允许删除）', 'switch'), ('api_key', '管理 API Key（32字符以上）', 'password'), ('webhook_key', 'Emby Webhook Key（32字符以上）', 'password')]),
             ('高级', [('request_timeout', '115 请求超时（秒）', 'number'), ('health_batch', '每次健康检查数量', 'number'), ('emby_path_mappings_json', 'Emby目录映射 JSON：emby/local（local须在STRM目录下）', 'textarea'), ('allowed_cdn_suffixes_json', '允许的 CDN 域名后缀 JSON', 'textarea'), ('media_extensions_json', '视频扩展名 JSON', 'textarea')]),
         ]

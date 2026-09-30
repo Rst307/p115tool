@@ -20,6 +20,7 @@ class Config:
     emby_path_mappings: list = field(default_factory=list)
     source_cids: list = field(default_factory=list)
     cache_cid: str = ""
+    restore_original: bool = True
     share_enabled: bool = False
     share_strategy: str = "auto"
     group_settle_seconds: int = 300

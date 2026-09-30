@@ -220,6 +220,8 @@ def action(plugin, payload):
             if set(payload) - base:
                 raise ValueError('Unexpected field')
             data = {'allow_delete': False} if name == 'scan' else {}
+            if name == 'share_batch':
+                return service.jobs.enqueue_active('virtualize', {'delete': service.config.delete_source})
             return service.jobs.enqueue_active(name, data)
         if name in ('generate', 'archive', 'restore', 'auto_organize'):
             if set(payload) - base - {'media_id'}:
@@ -260,10 +262,10 @@ def page(plugin):
     view = plugin._native_view
     browser = VirtualBrowser(service.db)
     result = browser.tree(view['prefix'], storage=view['storage'], offset=view['offset'], limit=20)
-    controls = [button(plugin, '立即扫描整理后目录', 'scan'), button(plugin, '开始创建虚拟分享', 'share_batch'), button(plugin, '开始生成STRM', 'generate_batch'), button(plugin, '健康检查', 'health'),
+    controls = [button(plugin, '立即扫描整理后目录', 'scan'), button(plugin, '一键扫描并创建虚拟分享', 'share_batch'), button(plugin, '开始生成STRM', 'generate_batch'), button(plugin, '健康检查', 'health'),
                 button(plugin, '受保护缓存清理', 'cleanup')]
     filters = []
-    for label, storage in [('全部存储', None), ('个人盘', 'NORMAL'), ('虚拟分享', 'SHARE'), ('恢复缓存', 'CACHE')]:
+    for label, storage in [('全部存储', None), ('个人盘', 'NORMAL'), ('虚拟分享', 'SHARE'), ('转存／缓存', 'CACHE')]:
         filters.append(button(plugin, label, 'browse', prefix=result['prefix'], storage=storage, offset=0))
     navigation = [button(plugin, '媒体库根目录', 'browse', prefix='/', storage=view['storage'], offset=0)]
     if result['parent']:
@@ -284,7 +286,7 @@ def page(plugin):
             actions = [button(plugin, '生成STRM', 'generate', media_id=mid),
                        button(plugin, '归档分享（保留源）', 'archive', media_id=mid)]
             if media.storage_type != 'NORMAL':
-                actions.extend([button(plugin, '恢复缓存', 'restore', media_id=mid),
+                actions.extend([button(plugin, '转存回原目录', 'restore', media_id=mid),
                                 button(plugin, '转存只读对账', 'restore_reconcile', media_id=mid),
                                 button(plugin, '缓存删除对账', 'cache_reconcile', media_id=mid)])
             if media.status in ('SOURCE_DELETING', 'FAILED_DELETE'):
@@ -308,7 +310,7 @@ def page(plugin):
     ledger = history(service, limit=20)
     return [
         {'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal'},
-            'text': '操作在MoviePilot插件内完成，使用当前管理员登录态，无需另启服务或输入管理API Key。按钮点击即提交；分享归档始终保留源，扫描不授权删源。'},
+            'text': '操作使用当前管理员登录态。一键虚拟分享会重新扫描整理目录；启用允许删除后验证并删除原影视文件，保留文件夹。定时删除还须开启自动删除。资源转存默认永久保存回原目录。'},
         {'component': 'VCardActions', 'props': {'class': 'flex-wrap'}, 'content': controls},
         {'component': 'VCard', 'content': [{'component': 'VCardTitle', 'text': '虚拟媒体目录'},
             {'component': 'VCardText', 'text': f"{result['prefix']} · {result['total']} 项 · 第 {view['offset']//20+1} 页"},

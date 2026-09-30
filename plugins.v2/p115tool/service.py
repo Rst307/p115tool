@@ -459,6 +459,9 @@ class Service:
 
     def restore(self, mid, reconcile_only=False):
         self.available()
+        if self.config.restore_original and self.db.one('SELECT media_id FROM normal_objects WHERE media_id=?', (mid,)):
+            from .original_storage import restore
+            return restore(self, mid, reconcile_only=reconcile_only)
         if not self.config.cache_cid or str(self.config.cache_cid) == "0":
             raise SafetyError("An explicit non-root cache_cid is required")
         with self._maintenance, self.lock(mid):

@@ -19,7 +19,8 @@ class DurableJobs:
         'archive_policy': ({'media_id', 'allow_delete'}, {'media_id'}),
         'archive_group': ({'media_ids', 'delete'}, {'media_ids'}),
         'scan': ({'allow_delete', 'scheduled'}, set()),
-        'share_batch': ({'automatic'}, set()),
+        'share_batch': ({'automatic', 'delete'}, set()),
+        'virtualize': ({'delete'}, set()),
         'generate_batch': (set(), set()),
         'health': ({'deep'}, set()),
         'cleanup': (set(), set()),
@@ -208,13 +209,19 @@ class DurableJobs:
                 raise SafetyError('Directory import incomplete; output stages were not submitted')
             if data.get('scheduled'):
                 if service.config.share_enabled and (service.config.auto_archive or any(r['storage'] == 'SHARE' for r in service.config.policies)):
-                    self.enqueue_active('share_batch', {'automatic': True})
+                    self.enqueue_active('share_batch', {'automatic': True, 'delete': service.config.auto_delete})
                 if service.config.auto_generate:
                     self.enqueue_active('generate_batch')
             return result
+        if kind == 'virtualize':
+            result = service.scan(allow_auto_delete=False)
+            if result['errors']:
+                raise SafetyError('Directory import incomplete; virtualization was not started')
+            from .postprocess import run_batch
+            return run_batch(service, 'share_batch', delete=data.get('delete', False))
         if kind in ('share_batch', 'generate_batch'):
             from .postprocess import run_batch
-            return run_batch(service, kind, automatic=data.get('automatic', False))
+            return run_batch(service, kind, automatic=data.get('automatic', False), delete=data.get('delete', False))
         if kind == 'health':
             return service.health(deep=data.get('deep', False))
         if kind == 'cleanup':
