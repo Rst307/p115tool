@@ -13,6 +13,7 @@ class Config:
     public_url: str = 'http://localhost:3000'
     playback_prefix: str = '/api/v1/plugin/P115Tool'
     source_cids: list = field(default_factory=list)
+    organize_cids: list = field(default_factory=list)
     scheduled: bool = False
     scan_time: str = '03:00'
     request_timeout: int = 30
@@ -42,20 +43,21 @@ class Config:
         if url.scheme not in ('http','https') or not url.hostname or url.username or url.password or url.query or url.fragment or any(ord(c)<33 for c in cfg.public_url): raise ValueError('Invalid public URL')
         if not re.fullmatch(r'/[A-Za-z0-9_/-]+',cfg.playback_prefix): raise ValueError('Invalid prefix')
         if not cfg.strm_dir or not cfg.data_dir or Path(cfg.strm_dir).resolve()==Path(cfg.data_dir).resolve(): raise ValueError('Invalid directories')
-        if not isinstance(cfg.source_cids,list) or len(cfg.source_cids)>100: raise ValueError('Invalid sources')
-        sources=[]
-        for source in cfg.source_cids:
-            if isinstance(source,(str,int)) and not isinstance(source,bool): source={'cid':str(source),'prefix':'/'}
-            if not isinstance(source,dict) or set(source)-{'cid','prefix'}: raise ValueError('Invalid source')
-            cid=str(source.get('cid','')); prefix=source.get('prefix','/')
-            if not re.fullmatch(r'\d{1,20}',cid) or not isinstance(prefix,str): raise ValueError('Invalid source')
-            from .strm import safe_parts
-            if not prefix.startswith('/'): raise ValueError('Invalid source path')
-            if prefix!='/':
-                try: safe_parts(prefix.strip('/'))
-                except Exception: raise ValueError('Invalid source path') from None
-            if cid not in {s['cid'] for s in sources}: sources.append({'cid':cid,'prefix':prefix})
-        cfg.source_cids=sources
+        for source_field in ('source_cids','organize_cids'):
+            if not isinstance(getattr(cfg,source_field),list) or len(getattr(cfg,source_field))>100: raise ValueError('Invalid sources')
+            sources=[]
+            for source in getattr(cfg,source_field):
+                if isinstance(source,(str,int)) and not isinstance(source,bool): source={'cid':str(source),'prefix':'/'}
+                if not isinstance(source,dict) or set(source)-{'cid','prefix'}: raise ValueError('Invalid source')
+                cid=str(source.get('cid','')); prefix=source.get('prefix','/')
+                if not re.fullmatch(r'\d{1,20}',cid) or not isinstance(prefix,str): raise ValueError('Invalid source')
+                from .strm import safe_parts
+                if not prefix.startswith('/'): raise ValueError('Invalid source path')
+                if prefix!='/':
+                    try: safe_parts(prefix.strip('/'))
+                    except Exception: raise ValueError('Invalid source path') from None
+                if cid not in {s['cid'] for s in sources}: sources.append({'cid':cid,'prefix':prefix})
+            setattr(cfg,source_field,sources)
         for k in ('media_extensions','allowed_cdn_suffixes'):
             values=getattr(cfg,k)
             if not isinstance(values,list) or not values or any(not isinstance(v,str) for v in values): raise ValueError('Invalid list')

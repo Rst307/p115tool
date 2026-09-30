@@ -1,20 +1,20 @@
 {
   "files": {
-    "__federation_expose_Config-C7ov5_FJ.js": "69bef44e5b77384c591b22b546c703c55e8762fc46b4d9430e3f0c21504e1eea",
-    "__federation_expose_Config-ZIdBHNZL.css": "08404c320541e93d69110ea597b3cbe86211f09536847585c564a28ba0aecb59",
-    "__federation_expose_Page-1kFvVTAI.css": "2a55f8a23ad691ba606dd894e789af3219d1ebdf4148310a0ca71be18b297998",
-    "__federation_expose_Page-C6YJsW_g.js": "760e6990ba74a4fc550710e644c4ced488a8a1587744e478c0b650003a0bfede",
+    "__federation_expose_Config-Co5mFz_Y.js": "f591675895c966b51329a0cd0dc135123242f0b338645142aa069cb80fcba2e6",
+    "__federation_expose_Config-PY-4AKsa.css": "f9b1021ab190054cdf73c965ad6f9f9a25b2ba6f5fbf644f1644723a4b08fdb4",
+    "__federation_expose_Page-BjgffL4b.js": "d0d35b936ebf6fe7bffa85ed992dea7f681ac26768f22c9a1475c83e4c55724a",
+    "__federation_expose_Page-CXLhDy-l.css": "e25b64725b6afa5e166ead66af393bdb4e4d18c8f1c4d788ba915cc3ed96f8fe",
     "__federation_fn_import-E6wRZccp.js": "11a2d68813601dffb4a4bb619cabf25526a7a445b054e418100e24128f6bdca2",
     "_plugin-vue_export-helper-DLxUpd2V.js": "a1c542b387e7f1a74d8b27060f5b735a15d582aa34d9e5f07b3962e71becce7b",
-    "remoteEntry.js": "27d72c46b68c9eb5e6852160d1344e30526a0287c38b5836e8786ccfba68cf2e"
+    "remoteEntry.js": "36f4d11c4f634107e848fda3f42c183f855fdb3550811f3aebf9b1b46383f2bd"
   },
   "sources": {
     "frontend/package-lock.json": "9fccb33dde7435c7fbd73b4a33f3b004c580ded3c57dd7fd4b9ac9cbe44bbb90",
     "frontend/vite.config.js": "8466c6e1a41893b25501139906a86a8d932bd5d51cccc102782a58b8a6c5f3a0",
     "frontend/src/config-schema.json": "a5338d955b09046ec0b16f3a9625b7955c763aae07dc722e474e6078745f932f",
-    "frontend/src/Config.vue": "d8256d9169177944b9019c0091040f931e104362a2fb341ca6195e898f83e7b6",
+    "frontend/src/Config.vue": "656965daca405a0c2b0b91106bc351d351fab8ff6fc5c135f54466b66798dbb3",
     "frontend/src/host.js": "1b6b3ba9b35180c0b7338c1c464a9fadcaab6259e1a2e47139e2394ef9b60fb6",
     "frontend/src/main.js": "60929e90fdb9d5090b51b772a517645b8da18e347a2f0362de34be7bc7fae3a1",
-    "frontend/src/Page.vue": "ecb849be403dfb1de0975be57dc07dcc905a9a57b1d111f9d8acb67432f75b23"
+    "frontend/src/Page.vue": "7bbf18e1cfb82053fb60d8c7324db65358c74a60d226f8fa48ab6c6c0cb2aab6"
   }
 }

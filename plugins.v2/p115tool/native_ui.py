@@ -23,10 +23,10 @@ def dispatch(plugin,route,payload):
             if set(payload)!={'config'}: raise ValueError('Invalid config envelope')
             Config.from_dict(payload['config']); return {'valid':True}
         if route=='data' and (payload=={'kind':'bootstrap'} or set(payload)=={'kind','ui_contract'} and payload.get('kind')=='bootstrap'):
-            current=type(payload.get('ui_contract')) is int and payload['ui_contract']==2
+            current=type(payload.get('ui_contract')) is int and payload['ui_contract']==3
             return {'enabled':plugin.get_state() if current else False,
                     'error':plugin._initialization_error if current else '插件页面已升级，请按 Ctrl+F5 强制刷新整个 MoviePilot 页面，再重新打开插件。旧页面的分享和缓存功能已移除。',
-                    'ui_contract':2,'refresh_required':not current}
+                    'ui_contract':3,'refresh_required':not current}
         # A request already sent by the cached 0.1.x page may arrive after upgrade.
         # Return only an upgrade notice; do not expose or revive its retired data.
         if route=='data' and payload=={'kind':'dashboard'}:
@@ -39,6 +39,8 @@ def dispatch(plugin,route,payload):
             from .host_transfer import organize
             return organize(service,payload['cids'])
         if route=='data' and payload=={'kind':'status'}: return service.snapshot()
+        if route=='data' and payload=={'kind':'organize_sources'}:
+            return {'items':[{'cid':source['cid'],'prefix':source['prefix']} for source in service.config.organize_cids]}
         if route=='data' and payload=={'kind':'sources'}:
             return {'items':[{'cid':source['cid'],'prefix':source['prefix']} for source in service.config.source_cids]}
         if route=='data' and set(payload)=={'kind','cid'} and payload['kind']=='folders':

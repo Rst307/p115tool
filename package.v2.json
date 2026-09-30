@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "递归生成分类STRM，115个人网盘302直链播放",
     "labels": "115,STRM,媒体管理",
-    "version": "0.2.4",
+    "version": "0.2.5",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.2.5": "独立配置MoviePilot待整理文件夹与STRM生成源文件夹；整理只允许待整理目录，生成只扫描STRM源，升级不沿用旧整理选择",
       "v0.2.4": "逐文件用115列表完整路径保留类型/类别/剧名/季；分类改正后迁移已确认归属的旧STRM及空目录，先记录本地检查点，展示网盘与输出路径示例",
       "v0.2.3": "生成STRM读取115目录祖先完整路径，选中类别或剧名目录也保留类型/类别/剧名/季目录；去掉emby等类型前缀，保持年份与tmdbid目录名",
       "v0.2.2": "新增一键整理：选择配置的115源目录并委托MoviePilot原生后台整理，复制保留源；校验CID与路径、合并重叠目录，未知提交不重试",

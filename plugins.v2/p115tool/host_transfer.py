@@ -12,7 +12,7 @@ def organize(service, cids):
             or any(not isinstance(cid, str) for cid in cids)
             or len(set(cids)) != len(cids)):
         raise ValueError('Invalid folder selection')
-    sources = {source['cid']: source for source in service.config.source_cids}
+    sources = {source['cid']: source for source in service.config.organize_cids}
     if any(cid not in sources for cid in cids):
         raise ValueError('Unconfigured folder')
     if service._worker and service._worker.is_alive():
