@@ -23,13 +23,16 @@ def normalize_file(data, parent="0", path=""):
         is_dir = str(data["is_directory"]).lower() in ("1", "true")
     if "file_category" in data:
         is_dir = str(data["file_category"]) == "0"
-    fid = data.get("fid") or data.get("file_id") or data.get("cid")
-    name = data.get("n") or data.get("file_name") or data.get("name")
+    fid = data.get("fid") or data.get("file_id") or data.get("cid") or data.get('category_id')
+    name = data.get("n") or data.get('fn') or data.get("file_name") or data.get("name") or data.get('category_name')
     if fid is None or name is None:
         raise RemoteError("Unsupported 115 file metadata shape")
-    return RemoteFile(str(fid), str(name), int(data.get("s", data.get("file_size", data.get("size", 0)))),
-                      str(data.get("sha", data.get("sha1", ""))).upper(),
-                      str(data.get("pid", data.get("parent_id", parent))),
+    original_parent = data.get('parent_id', data.get('pid'))
+    if original_parent is None:
+        original_parent = parent if is_dir else data.get('category_id', data.get('cid', parent))
+    return RemoteFile(str(fid), str(name), int(data.get("s", data.get('fs', data.get("file_size", data.get("size", 0))))),
+                      str(data.get("sha") or data.get("sha1") or data.get('file_sha1') or '').upper(),
+                      str(original_parent),
                       str(data.get("pc", data.get("pick_code", data.get("pickcode", "")))),
                       path, is_dir)
 

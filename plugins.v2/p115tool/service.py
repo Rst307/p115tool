@@ -1,6 +1,6 @@
 from __future__ import annotations
 from collections import OrderedDict
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 import hashlib
 import json
@@ -127,7 +127,7 @@ class Service:
                 (media.id, int(self.config.auto_delete and allow_auto_delete),time.time()))
             if media_type is not None:
                 self.groups.metadata(media.id, media_type, season, tmdb_id)
-            if category is not None:
+            if category is not None and not (isinstance(category, str) and not category.strip()):
                 from .organizer import portable_title
                 classification = {'type': {'MOVIE': '电影', 'TV': '电视剧'}.get(media_type, '未识别'),
                                   'category': portable_title(category), 'provider': 'MoviePilot'}
@@ -173,17 +173,35 @@ class Service:
                             counts["files"] += 1
                             if Path(file.name).suffix.lower() not in self.config.media_extensions:
                                 continue
+                            failure = 'FAILED_PATH'
                             try:
+                                virtual_path(child)
+                                if not file.pickcode or not file.sha1:
+                                    failure = 'FAILED_METADATA_LOOKUP'
+                                    full = self.client.stat(file.file_id)
+                                    failure = 'FAILED_METADATA_IDENTITY'
+                                    if (full.is_dir or full.file_id != file.file_id or full.parent_id != str(parent)
+                                            or full.name != file.name or full.size != file.size
+                                            or (file.sha1 and file.sha1.upper() != full.sha1.upper())):
+                                        raise SafetyError('File details differ from directory snapshot')
+                                    failure = 'FAILED_PICKCODE_MISSING'
+                                    if not full.pickcode:
+                                        raise SafetyError('File details do not contain a playback pickcode')
+                                    file = replace(file, pickcode=full.pickcode, sha1=full.sha1)
+                                failure = 'FAILED_METADATA_CONTEXT'
                                 metadata = self.db.one('SELECT value FROM settings WHERE name=?', (f'transfer_metadata:{file.file_id}',))
                                 metadata = json.loads(metadata['value']) if metadata else {}
+                                if not isinstance(metadata, dict):
+                                    raise ValueError('Invalid saved host metadata')
                                 # Events supply classification only; enumeration supplies identity/path.
                                 metadata = {k: metadata.get(k) for k in ('title', 'tmdb_id', 'media_type', 'season', 'category')}
+                                failure = 'FAILED_IMPORT_SAFETY'
                                 media = self.ingest(file, child, allow_auto_delete=False, defer_archive=True, defer_generate=True, **metadata)
                                 imported.append(media.id)
                                 counts["media"] += 1
                             except (ToolError, ValueError):
                                 counts["errors"] += 1
-                                self.db.log("scan", "FAILED", detail="File import failed; source untouched")
+                                self.db.log('scan_import', failure, detail='File import failed; source untouched')
                     from .activity import activity
                     activity('扫描进度', f'目录={len(seen)} 文件={counts["files"]} 媒体={counts["media"]} 错误={counts["errors"]}')
                 snapshots.append((cid, seen, observed))
