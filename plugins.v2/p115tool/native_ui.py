@@ -22,8 +22,16 @@ def dispatch(plugin,route,payload):
         if route=='validate':
             if set(payload)!={'config'}: raise ValueError('Invalid config envelope')
             Config.from_dict(payload['config']); return {'valid':True}
-        if route=='data' and payload=={'kind':'bootstrap'}:
-            return {'enabled':plugin.get_state(),'error':plugin._initialization_error}
+        if route=='data' and (payload=={'kind':'bootstrap'} or set(payload)=={'kind','ui_contract'} and payload.get('kind')=='bootstrap'):
+            current=type(payload.get('ui_contract')) is int and payload['ui_contract']==2
+            return {'enabled':plugin.get_state() if current else False,
+                    'error':plugin._initialization_error if current else '插件页面已升级，请按 Ctrl+F5 强制刷新整个 MoviePilot 页面，再重新打开插件。旧页面的分享和缓存功能已移除。',
+                    'ui_contract':2,'refresh_required':not current}
+        # A request already sent by the cached 0.1.x page may arrive after upgrade.
+        # Return only an upgrade notice; do not expose or revive its retired data.
+        if route=='data' and payload=={'kind':'dashboard'}:
+            return {'refresh_required':True,'message':'请按 Ctrl+F5 刷新 MoviePilot 页面后重新打开插件。',
+                    'jobs':[],'account':{},'metrics':{},'daily':{},'cumulative':{}}
         service=plugin._service
         if not service: raise ToolError('Service unavailable')
         if route=='action' and payload=={'action':'generate'}: return service.start()
