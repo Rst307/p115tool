@@ -1,0 +1,17 @@
+{
+  "P115Tool": {
+    "name": "115 工具箱",
+    "description": "统一 STRM、302 播放、分享归档与恢复缓存；开发版，真实链路待验收",
+    "labels": "115,STRM,媒体管理",
+    "version": "0.1.1",
+    "system_version": ">=2.15.6,<3",
+    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
+    "author": "Rst307",
+    "level": 1,
+    "v3": false,
+    "release": true,
+    "history": {
+      "v0.1.1": "原生Vue联邦页面、搜索分页与对象详情、管理员数据接口、配置校验与重载保护；开发测试版，完整功能及真实链路待验收"
+    }
+  }
+}

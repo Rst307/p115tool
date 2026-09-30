@@ -1,0 +1,18 @@
+{
+  "files": {
+    "__federation_expose_Config-51smSevO.js": "65d224afded6d87363b92716e2aadb7f7ed67058ae339567b14e69e534bc682f",
+    "__federation_expose_Page-DKyow_6C.css": "6e74b8766baf48c6b96ccf2fc5668f9c89564169d854868d9c73293e5077f1c9",
+    "__federation_expose_Page-DT7cnDG_.js": "77abac89bb8d73a5f7a0080bd4bee270dd766f08f7b80ee9364a305c26b9adaa",
+    "__federation_fn_import-E6wRZccp.js": "11a2d68813601dffb4a4bb619cabf25526a7a445b054e418100e24128f6bdca2",
+    "host-BJ1Dc0JQ.js": "133d171e6ac25dbafc31f68aaf94680d1e52091eb7400658502c874ff71fae57",
+    "remoteEntry.js": "c7cbcc1b07a666fbfe60be58f6895e176d572faba511cc865fc8dfe7da04b5ae"
+  },
+  "sources": {
+    "frontend/package-lock.json": "9fccb33dde7435c7fbd73b4a33f3b004c580ded3c57dd7fd4b9ac9cbe44bbb90",
+    "frontend/vite.config.js": "8466c6e1a41893b25501139906a86a8d932bd5d51cccc102782a58b8a6c5f3a0",
+    "frontend/src/Config.vue": "f63cab431bad9ba67aa35d0827b6a7978435203f52cb0813f9ecb64ab2017114",
+    "frontend/src/host.js": "1ccd450e00398379da074c5210d106fd6304c6a024963fcd8772d638230fe535",
+    "frontend/src/main.js": "60929e90fdb9d5090b51b772a517645b8da18e347a2f0362de34be7bc7fae3a1",
+    "frontend/src/Page.vue": "18490105481998fccae9b91de31cd0b7c416d1c0329008e25641f166036ae6f2"
+  }
+}
