@@ -38,7 +38,7 @@ class P115Tool(_PluginBase):
     plugin_name = '115 工具箱'
     plugin_desc = '统一 STRM、302 播放、分享虚拟存储、归档和恢复缓存'
     plugin_icon = 'https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png'
-    plugin_version = '0.1.2'
+    plugin_version = '0.1.3'
     plugin_author = 'Rst307'
     author_url = 'https://github.com/Rst307'
     plugin_config_prefix = 'p115tool_'
@@ -122,9 +122,10 @@ class P115Tool(_PluginBase):
 
     def get_api(self):
         from .api import API
-        # MoviePilot prefixes /api/v1/plugin; plugin ID must match class name.
+        # MoviePilot's PluginManager adds /<plugin ID>; the endpoint registrar
+        # subsequently adds /api/v1/plugin. Return plugin-relative paths here.
         from .native_ui import routes
-        return API(lambda: self._service).routes('/P115Tool') + routes(self)
+        return API(lambda: self._service).routes('') + routes(self)
 
     def get_service(self):
         if not self.get_state():

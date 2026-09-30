@@ -57,7 +57,7 @@ def routes(plugin):
     async def validate_endpoint(request: Request):
         return await dispatch(request, validate_config)
 
-    return [{'path': '/P115Tool/native/' + path, 'endpoint': handler, 'methods': ['POST'],
+    return [{'path': '/native/' + path, 'endpoint': handler, 'methods': ['POST'],
              'summary': 'MoviePilot native plugin action', 'allow_anonymous': False, 'auth': 'bear',
              'dependencies': [Depends(administrator)]}
             for path, handler in [('action', endpoint), ('data', data_endpoint), ('validate', validate_endpoint)]]

@@ -1,17 +1,18 @@
 {
   "files": {
-    "__federation_expose_Config-BhSN2X_J.js": "a54a8ec38e545a7fe95932279ac4976ca99bee8196b69e9e4617967604f5e794",
-    "__federation_expose_Page-Dif5URXR.js": "91bcccf7efa61ac2ecae9782a7b1d63811130bdb73209be074cbd611886d5991",
+    "__federation_expose_Config-DhwUT4rc.js": "54dcd9ea19bc38334752d373de04c5d9e377d5da0e021574012110d45a7563ec",
+    "__federation_expose_Page-6Nuz7Z_E.js": "f8e1f7158b708324e0c9c27aae64ce3d36d8218d7a371718f6a14798c4f1ba72",
     "__federation_expose_Page-jXDF-lHr.css": "5e0444bd95f19adf3e3ec85107f68bf8d637eb1c51ec75e19285877b30b7c473",
     "__federation_fn_import-E6wRZccp.js": "11a2d68813601dffb4a4bb619cabf25526a7a445b054e418100e24128f6bdca2",
-    "host-DyM5vinD.js": "b4cdeaa30c6b4b51091f436045a08685510ca635a4109d5b3373e46f502474d3",
-    "remoteEntry.js": "4f250a14c393aa201d4220718fd057a4f65a1b42de17fc9101e129fc998ca408"
+    "host-BftUK10E.js": "31ccda553e148a283bcdb63abd46caff1f3da704aa3eef74495f8be482914f97",
+    "remoteEntry.js": "81fa1e23f683cf0647abb48dbfbdca9acbc345eb1ce194b067a62ee323233857"
   },
   "sources": {
     "frontend/package-lock.json": "9fccb33dde7435c7fbd73b4a33f3b004c580ded3c57dd7fd4b9ac9cbe44bbb90",
     "frontend/vite.config.js": "8466c6e1a41893b25501139906a86a8d932bd5d51cccc102782a58b8a6c5f3a0",
-    "frontend/src/Config.vue": "25fe806b34c466a5a1239fb4479f8ef4b8ceea6497f87c11aa4bc63dee8b1481",
-    "frontend/src/host.js": "45f9ea81be46a0381e542288710aca443cbb10f83cb7696b23c1fb0c500396f0",
+    "frontend/src/config-schema.json": "03b058c708e4befbc4ecdff59b8ca4e56c9f01a2df6f2a68c1fe674c5a534b1f",
+    "frontend/src/Config.vue": "e4da8d363a8f060abf6456d55e330baf30c60745c857eb2792a0e6a88cb244ef",
+    "frontend/src/host.js": "1b6b3ba9b35180c0b7338c1c464a9fadcaab6259e1a2e47139e2394ef9b60fb6",
     "frontend/src/main.js": "60929e90fdb9d5090b51b772a517645b8da18e347a2f0362de34be7bc7fae3a1",
     "frontend/src/Page.vue": "0f1de142d246f47fc96170ecb4451f1ca77e0698a5d4fb55ca783de2a5e0b31b"
   }

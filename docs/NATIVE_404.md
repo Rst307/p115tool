@@ -1,5 +1,27 @@
 # 原生页面读取失败：HTTP 404
 
+## 0.1.3：重复插件ID前缀修复
+
+[MoviePilot v2.15.6 PluginManager.get_plugin_apis](https://github.com/jxxghp/MoviePilot/blob/v2.15.6/app/core/plugin.py)
+先为插件返回的路径添加`/P115Tool`，API注册器再添加`/api/v1/plugin`。
+0.1.1／0.1.2插件返回的路径已包含`/P115Tool`，最终形成
+`/api/v1/plugin/P115Tool/P115Tool/native/data`，与前端请求不匹配。
+这是明确的宿主契约错误，原离线测试遗漏了PluginManager的前缀阶段。
+
+0.1.3让所有宿主接口返回插件相对路径（如`/native/data`、`/play/{token}`），
+保留前端及STRM中的最终请求地址。回归测试现在覆盖完整两级前缀、真实HTTP请求、
+同步／异步管理员依赖及停用时的bootstrap／配置校验，保持独立服务路由不变。
+补齐宿主前缀阶段后，修复前data、validate、action均为`404 != 200`，修复后通过。
+
+配置页顶部新增独立“启用插件”开关，按钮为“保存并启动”或“保存并停止”。
+字段名称与类型随前端打包，不依赖bootstrap成功才能显示。
+仅在插件校验接口404时，允许走宿主原有管理员配置保存流程；初始化仍会完整校验配置，
+校验失败不替换运行服务。401／403／422／500及未知错误不会触发此回退。
+停用不会删除媒体数据库或源文件。更新后重新加载插件并强制刷新浏览器，
+再验证最终请求路径及启停状态。
+
+## 0.1.2排查历史及验证限制
+
 2026-09-30（Asia/Shanghai），用户在MoviePilot v2.15.6、插件0.1.1中观察到
 `POST /api/v1/plugin/P115Tool/native/data`返回404。截图证明请求到达服务器，
 不能单凭该响应确定路由缺失的具体原因。

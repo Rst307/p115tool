@@ -14,7 +14,7 @@
 
 ## 宿主认证边界
 
-原生动作仅由插件get_api注册`/P115Tool/native/action`，设置allow_anonymous=false和auth=bear。依据 [MoviePilot插件API注册源码](https://github.com/jxxghp/MoviePilot/blob/v2/app/api/endpoints/plugin.py)，宿主会注入Bearer校验。本路由额外保留Depends管理员依赖，检查超级管理员及激活状态；不能只靠页面按钮隐藏来保护操作。
+原生动作由插件get_api返回相对路径`/native/action`，设置allow_anonymous=false和auth=bear。PluginManager添加`/P115Tool`，API注册器添加`/api/v1/plugin`，最终路径为`/api/v1/plugin/P115Tool/native/action`。依据 [MoviePilot插件API注册源码](https://github.com/jxxghp/MoviePilot/blob/v2/app/api/endpoints/plugin.py)，宿主会注入Bearer校验。本路由额外保留Depends管理员依赖，检查超级管理员及激活状态；不能只靠页面按钮隐藏来保护操作。
 
 无宿主认证模块时不注册原生动作，独立create_app也不注册。管理API仍需原独立密钥，两套鉴权不互相替代。动作使用有界Request-only解析，错误不回显原始字段。页面随机nonce在插件重新初始化后变更，旧页面不能提交新实例操作；它不是管理密钥。多个管理员共享同一插件实例的目录视图，当前视图仅保留在内存。
 

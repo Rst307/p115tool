@@ -4,6 +4,8 @@
 
 ## 本轮验证
 
+- 0.1.3宿主前缀及启停增量：全量267项通过（93.971秒），前端5项通过，Vue构建及原生安装包检查通过。get_api返回相对路径，修正MoviePilot自动添加插件ID造成的双重前缀404；原生HTTP测试已补齐PluginManager阶段。配置页顶部启用开关、保存并启动／停止及离线字段已实现，真实启停和播放链路仍需部署验收。详见[NATIVE_404.md](NATIVE_404.md)。
+
 - 0.1.2原生404排查增量：全量`unittest discover -s tests -v`为264项通过（131.383秒，输出test-results.txt）；前端`npm.cmd test`为3项通过，Vue构建通过，原生安装包已生成在`dist/moviepilot-0.1.2/`。兼容同步／异步管理员鉴权，宿主鉴权加载异常不再静默遗漏接口；页面按HTTP状态显示脱敏错误。用户v2.15.6／0.1.1实例的404尚未复核，不以离线复现推断实际根因，详见[NATIVE_404.md](NATIVE_404.md)。
 
 - `.\.venv\Scripts\python.exe -m unittest discover -s tests -v`：253项通过（Python3.12.14），完整输出见工作区test-results.txt。此后新增停止期间等待播放请求的竞态用例，最新宿主生命周期定向回归8项通过；当前测试集254项，下一次全量需包含新增用例。
