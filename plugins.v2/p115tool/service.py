@@ -81,6 +81,10 @@ class Service:
         seen_files=set(); seen_dirs=set()
         try:
             for source in self.config.source_cids:
+                # Include ancestors even when the selected CID is a category or
+                # a show folder and its manually configured prefix is only '/'.
+                resolve_path=getattr(self.client,'directory_path',None)
+                prefix=resolve_path(source['cid']) if callable(resolve_path) else source['prefix']
                 stack=[(source['cid'],'')]
                 while stack:
                     cid,relative=stack.pop()
@@ -103,7 +107,7 @@ class Service:
                                 if detail.is_dir or (detail.file_id,detail.name,detail.size,detail.parent_id)!=(file.file_id,file.name,file.size,cid) or (file.sha1 and detail.sha1!=file.sha1): raise SafetyError('File changed')
                                 file=detail
                             if not file.pickcode: raise SafetyError('Missing pickcode')
-                            destination=classify(source['prefix'],path,**({'recognizer':self.recognizer} if self.recognizer else {}))
+                            destination=classify(prefix,path,**({'recognizer':self.recognizer} if self.recognizer else {}))
                             token=self.register(file,destination)
                             output=self.strm.generate(destination,token)
                             self.query('UPDATE strm_files SET strm_path=? WHERE file_id=?',(output,file.file_id))

@@ -87,6 +87,36 @@ class P115ClientManager:
             finally:
                 self._last_request = time.monotonic()
 
+    def directory_path(self, cid="0"):
+        """Read the selected directory's ancestors, without trusting a manual prefix."""
+        if str(cid) == '0':
+            return '/'
+        response = check_response(self.call('fs_files', {
+            'cid': str(cid), 'offset': 0, 'limit': 1, 'cur': 1, 'show_dir': 1}))
+        trail = response.get('path')
+        if (not isinstance(trail, list) or not trail
+                or not all(isinstance(item, dict) for item in trail)
+                or str(trail[-1].get('cid')) != str(cid)):
+            raise SafetyError('115 directory identity mismatch')
+        from .strm import safe_parts
+        parts, seen = [], set()
+        for item in trail:
+            fid = str(item.get('cid', ''))
+            if not re.fullmatch(r'[0-9]{1,20}', fid) or fid in seen:
+                raise SafetyError('Invalid directory ancestors')
+            seen.add(fid)
+            if fid == '0':
+                if parts:
+                    raise SafetyError('Invalid directory root position')
+                continue
+            name = item.get('name') or item.get('n')
+            if not isinstance(name, str) or len(safe_parts(name)) != 1:
+                raise SafetyError('Invalid directory ancestor name')
+            parts.append(name)
+        if not parts:
+            raise SafetyError('Directory ancestors unavailable')
+        return '/' + '/'.join(parts)
+
     def list_files(self, cid="0"):
         offset = 0
         seen = set()
