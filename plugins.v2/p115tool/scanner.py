@@ -4,6 +4,46 @@ import re
 from .models import MissingFile, RemoteError, ToolError, SafetyError
 
 
+def complete_scanned_organize(service, file, path):
+    """Close a legacy intent only when listing and fresh details prove completion.
+
+    No remote mutation or STRM output. Partial/unknown results retain their intent.
+    """
+    plan = service.db.one('''SELECT p.* FROM organize_plans p
+        JOIN normal_objects n ON n.media_id=p.media_id
+        WHERE n.file_id=? AND p.state<>'DONE' ''', (file.file_id,))
+    if not plan:
+        return
+    mid = plan['media_id']
+    media, normal = service.db.media(mid), service.normal(mid)
+    if (media.source_deleted or media.storage_type != 'NORMAL'
+            or media.status not in ('DISCOVERED', 'READY', 'ORGANIZED')
+            or service.db.one('SELECT media_id FROM share_objects WHERE media_id=?', (mid,))
+            or service.db.one('SELECT media_id FROM cache_objects WHERE media_id=?', (mid,))
+            or service.db.one("SELECT id FROM recycle_intents WHERE media_id=? AND state IN ('REQUESTED','ACKNOWLEDGED')", (mid,))):
+        raise SafetyError('Pending organize plan must be reconciled before re-import')
+    if (file.parent_id != plan['new_parent'] or file.name != plan['new_name']):
+        raise SafetyError('Pending organize plan must be reconciled before re-import')
+    if (file.is_dir or file.file_id != plan['file_id'] or not file.pickcode
+            or not re.fullmatch(r'[A-Fa-f0-9]{40}', plan['sha1'])
+            or any(sha.upper() != plan['sha1'].upper() for sha in (file.sha1, media.sha1, normal['sha1']))
+            or any(size != plan['size'] for size in (file.size, media.size, normal['size']))):
+        raise SafetyError('Scanned organize identity changed')
+    current = service.client.stat(plan['file_id'])
+    if (current.is_dir or (current.file_id, current.name, current.size, current.sha1.upper(), current.parent_id, current.pickcode)
+            != (file.file_id, file.name, file.size, file.sha1.upper(), file.parent_id, file.pickcode)):
+        raise SafetyError('Scanned organize identity changed')
+    now = time.time()
+    with service.db.connect() as connection:
+        connection.execute('UPDATE media SET file_name=?,virtual_path=?,updated_at=? WHERE id=?',
+                           (file.name, path, now, mid))
+        connection.execute('UPDATE normal_objects SET parent_id=?,path=?,pickcode=? WHERE media_id=?',
+                           (file.parent_id, path, file.pickcode, mid))
+        connection.execute("UPDATE organize_plans SET state='DONE',updated_at=? WHERE media_id=?", (now, mid))
+    service.invalidate(mid)
+    service.db.log('scan_organize', 'DONE', mid, 'Legacy target identity confirmed; local mapping reconciled')
+
+
 def complete_legacy_hash(service, file):
     """Fill absent historical hashes only for an unchanged normal source."""
     row = service.db.one('''SELECT m.id,m.sha1 AS media_sha1,m.file_name,m.size,m.status,
@@ -47,6 +87,7 @@ def import_failure_reason(exception, fallback):
         'Recognition title cannot form a portable filename': 'FAILED_HOST_CATEGORY',
         'Legacy source hash cannot be completed while protected': 'FAILED_LEGACY_HASH_PROTECTED',
         'Legacy source identity changed': 'FAILED_LEGACY_IDENTITY',
+        'Scanned organize identity changed': 'FAILED_ORGANIZE_IDENTITY',
     }
     return reasons.get(str(exception), fallback)
 
