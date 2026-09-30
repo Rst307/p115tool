@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "统一 STRM、302 播放、分享归档与恢复缓存；开发版，真实链路待验收",
     "labels": "115,STRM,媒体管理",
-    "version": "0.1.8",
+    "version": "0.1.9",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.1.9": "严格复查身份后补齐历史普通源空SHA1；区分内容变更、已删除源、整理检查点和宿主类型分类校验原因",
       "v0.1.8": "修复扫描缺提取码时读取详情、115详情父目录及SHA1字段兼容、空宿主分类导入失败；扫描失败输出固定脱敏原因码",
       "v0.1.7": "长期分享；定期虚拟分享验证后按授权删除原影视文件；一键扫描并虚拟化；虚拟资源永久转存回原目录",
       "v0.1.6": "MoviePilot正常整理后每天统一扫描；虚拟分享与STRM独立后台任务及手动开始按钮，分享保留源",

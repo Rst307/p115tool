@@ -195,12 +195,17 @@ class Service:
                                     raise ValueError('Invalid saved host metadata')
                                 # Events supply classification only; enumeration supplies identity/path.
                                 metadata = {k: metadata.get(k) for k in ('title', 'tmdb_id', 'media_type', 'season', 'category')}
+                                failure = 'FAILED_LEGACY_HASH_CHECK'
+                                from .scanner import complete_legacy_hash
+                                complete_legacy_hash(self, file)
                                 failure = 'FAILED_IMPORT_SAFETY'
                                 media = self.ingest(file, child, allow_auto_delete=False, defer_archive=True, defer_generate=True, **metadata)
                                 imported.append(media.id)
                                 counts["media"] += 1
-                            except (ToolError, ValueError):
+                            except (ToolError, ValueError) as exc:
                                 counts["errors"] += 1
+                                from .scanner import import_failure_reason
+                                failure = import_failure_reason(exc, failure)
                                 self.db.log('scan_import', failure, detail='File import failed; source untouched')
                     from .activity import activity
                     activity('扫描进度', f'目录={len(seen)} 文件={counts["files"]} 媒体={counts["media"]} 错误={counts["errors"]}')

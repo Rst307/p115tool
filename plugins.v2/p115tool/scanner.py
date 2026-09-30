@@ -1,6 +1,54 @@
 """Conservative source absence reconciliation after complete tree enumeration."""
 import time
-from .models import MissingFile, RemoteError, ToolError
+import re
+from .models import MissingFile, RemoteError, ToolError, SafetyError
+
+
+def complete_legacy_hash(service, file):
+    """Fill absent historical hashes only for an unchanged normal source."""
+    row = service.db.one('''SELECT m.id,m.sha1 AS media_sha1,m.file_name,m.size,m.status,
+        m.source_deleted,m.storage_type,n.sha1 AS normal_sha1,n.parent_id,n.pickcode
+        FROM media m JOIN normal_objects n ON n.media_id=m.id WHERE n.file_id=?''', (file.file_id,))
+    if not row or row['media_sha1']:
+        return
+    mid = row['id']
+    if (row['normal_sha1'] or row['source_deleted'] or row['storage_type'] != 'NORMAL'
+            or row['status'] not in ('DISCOVERED', 'READY')
+            or service.db.one('SELECT media_id FROM share_objects WHERE media_id=?', (mid,))
+            or service.db.one('SELECT media_id FROM cache_objects WHERE media_id=?', (mid,))
+            or service.db.one("SELECT media_id FROM organize_plans WHERE media_id=? AND state<>'DONE'", (mid,))
+            or service.db.one("SELECT id FROM recycle_intents WHERE media_id=? AND state IN ('REQUESTED','ACKNOWLEDGED')", (mid,))):
+        raise SafetyError('Legacy source hash cannot be completed while protected')
+    identity = (file.file_id, row['file_name'], row['size'], row['parent_id'], row['pickcode'])
+    if (file.file_id, file.name, file.size, file.parent_id, file.pickcode) != identity:
+        raise SafetyError('Legacy source identity changed')
+    full = service.client.stat(file.file_id)
+    if (full.is_dir or (full.file_id, full.name, full.size, full.parent_id, full.pickcode) != identity
+            or not re.fullmatch(r'[A-Fa-f0-9]{40}', full.sha1)
+            or full.sha1.upper() != file.sha1.upper()):
+        raise SafetyError('Legacy source identity changed')
+    with service.db.connect() as connection:
+        connection.execute("UPDATE media SET sha1=? WHERE id=? AND sha1=''", (full.sha1.upper(), mid))
+        connection.execute("UPDATE normal_objects SET sha1=? WHERE media_id=? AND sha1=''", (full.sha1.upper(), mid))
+    service.db.log('scan_legacy_hash', 'COMPLETED', mid)
+
+
+def import_failure_reason(exception, fallback):
+    # Only exact local validation messages map to fixed codes. Never emit text.
+    reasons = {
+        'Expected a real file with pickcode': 'FAILED_FILE_METADATA',
+        'Pending organize plan must be reconciled before re-import': 'FAILED_ORGANIZE_PENDING',
+        'Deleted source identity cannot be silently replaced': 'FAILED_SOURCE_ALREADY_DELETED',
+        'Remote file content changed; explicit re-import required': 'FAILED_SOURCE_CONTENT_CHANGED',
+        'Invalid media type': 'FAILED_HOST_MEDIA_TYPE',
+        'Invalid season': 'FAILED_HOST_SEASON',
+        'Invalid TMDB ID': 'FAILED_HOST_TMDB_ID',
+        'Recognition title is missing or too long': 'FAILED_HOST_CATEGORY',
+        'Recognition title cannot form a portable filename': 'FAILED_HOST_CATEGORY',
+        'Legacy source hash cannot be completed while protected': 'FAILED_LEGACY_HASH_PROTECTED',
+        'Legacy source identity changed': 'FAILED_LEGACY_IDENTITY',
+    }
+    return reasons.get(str(exception), fallback)
 
 
 def reconcile_sources(service, snapshots, counts):
