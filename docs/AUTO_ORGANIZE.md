@@ -1,52 +1,20 @@
-# 自动整理执行与恢复
+# MoviePilot原生整理（0.1.5）
 
-## 开启条件
+本说明替代0.1.4及更早版本的插件目录创建、模板渲染、move/rename执行方案。
 
-默认 `auto_organize_enabled=false`。启用必须设置非根目录的数字 `organize_root_cid`，例如已在115创建的媒体库目录CID。识别和模板约束见 [ORGANIZE_PREVIEW.md](ORGANIZE_PREVIEW.md)。
+- 自动委托开关默认关闭；关闭时仍接收宿主整理完成事件。
+- 启用后扫描或媒体操作通过StorageChain核对115文件，再调用TransferChain.manual_transfer。目录、命名、类型／类别、识别、附加文件及刮削由宿主决定。
+- 请求固定target_storage=u115、transfer_type=copy、background=True、force=False。复制保留原文件，插件不会调用115整理写操作；需在MoviePilot配置115账户及媒体库规则。
+- 提交前持久化SUBMITTED。宿主拒绝记FAILED，调用异常记UNKNOWN；上述状态及DONE均阻止插件重复提交。任务队列DONE只表示提交调用完成，媒体详情中的MoviePilot整理状态表示结果是否已返回。
+- TransferComplete读取fileitem、transferinfo.target_item、mediainfo及meta；白名单校验115目标文件ID和路径，将目标交后台队列入库、STRM生成及分享策略。结果类别用于STRM分类，不重新推算整理目标。
+- TransferFailed记录失败；不存储宿主错误详情、凭据或直链。源文件ID、存储和路径匹配后才关联委托记录。目标标记持久化，扫描不会再次整理已返回目标。
+- 原文件与复制后的目标分别索引；原文件token保持。已委托原文件禁止分享归档，后续归档针对宿主返回目标，仍受原有验证与删除授权门禁控制。
+- 失败、未知结果或缺失事件在MoviePilot整理历史和任务页面排查／重试。插件不猜测目标路径、不重放未知写请求；目录扫描可补偿媒体索引，但不能证明委托已完成。
+- 旧organize_plans保留，/organize/reconcile仅查看远端状态，已经由外部完成的结果可更新本地映射。resume被拒绝，剩余整理在MoviePilot处理。旧/organize接口拒绝插件自行移动重命名。
 
-在MoviePilot中，整理事件进入持久队列，读取115源后依次进行自动整理、记录媒体身份，再提交原有延迟分享策略。扫描先枚举全部配置根，再整理已导入文件，避免在分页枚举期间移动远端文件；失败媒体不继续归档。显式媒体导入也遵守该开关。
+## 宿主契约
 
-自动整理只负责目录和文件move/rename，不删除源、不创建分享。后续分享/源删除仍受独立策略、配置、授权快照和完整安全屏障控制。不要把开启整理视为授权删除。
-
-## 手动入口与队列
-
-```http
-POST /organize/auto
-{"media_id":1}
-```
-
-也可提交 `POST /jobs`，`{"kind":"auto_organize","payload":{"media_id":1}}`。管理密钥必需；没有MoviePilot识别服务的独立环境不会自行猜造身份。
-
-## 持久检查点
-
-首次识别成功后保存 `settings.auto_organize:<id>`，冻结目标、身份、原源位置和目标根；恢复不重新识别或按修改后的模板改变目标。状态DIRECTORIES→EXECUTING→DONE。
-
-每级目标目录完整枚举并复查ID、名称和父目录。同名文件或多个同名目录拒绝；创建前保存mkdir意图，成功返回ID立即持久化。超时后仅查询已存在的结果，不重发同一mkdir。没有可观测结果时保持检查点，须等待平台结果或人工核查。
-
-整理目标目录允许复用配置根下面唯一的既有目录：这不是缓存目录的独占认领，不会删除目录或目录里其他文件。此处只确认“它是用户指定逻辑目标”，不宣称同名目录一定是上次请求创建。目标文件碰撞仍由现有organize门禁拒绝，不覆盖已有文件。
-
-移动前和恢复前重新检查完整目标祖先链，拒绝目标目录已移出配置根。随后调用已有organize计划，保留文件名/扩展名、源身份/目标碰撞门禁及keep_both移动策略。外部客户端并发修改并不存在115事务隔离保证，真实竞态仍需环境验证。
-
-## 恢复操作
-
-```http
-POST /organize/auto/status
-{"media_id":1}
-```
-
-只读取本地状态和目标，不发送115请求。首次执行 `/organize/auto` 会按开关授权发起写操作；EXECUTING状态下默认只读远端结果对账，已经完成的移动/重命名可提交本地映射。尚有步骤未完成时不会自动续写。
-
-明确继续剩余步骤：
-
-```http
-POST /organize/auto
-{"media_id":1,"resume":true,"confirmation":"AUTO_RESUME:1"}
-```
-
-移动已生效不会重复move，重命名已生效不会重复rename。目标根变化、媒体身份/目录祖先变化、另一个整理计划替换原计划时拒绝。未可见的mkdir仍不靠resume强制重试。
-
-DONE计划保留；再次导入/扫描同一远端ID、名称/内容/父目录一致的已整理媒体时保持冻结虚拟路径和token，避免被扫描根的显示前缀改回旧路径。
-
-## 验证边界
-
-`test_auto_organize.py`覆盖完整创建目录/移动/重命名/元数据、token/STRM稳定、目录超时重启与无结果禁止重发、移动超时显式续做、碰撞、配置变化、目标祖先逃逸、导入/事件/扫描顺序与失败不归档。使用真实SQLite/本地STRM及模拟115/识别服务；没有真实网盘写操作。真实MoviePilot事件、目录分页、识别质量、宿主界面及Emby播放仍待联调；同季连续多集已保留范围；跨季合集、离散集数和非TMDB识别尚不支持自动重命名。
+核对MoviePilot v2.15.6源码：
+[TransferChain及事件](https://github.com/jxxghp/MoviePilot/blob/v2.15.6/app/chain/transfer.py)、
+[StorageChain路径查询](https://github.com/jxxghp/MoviePilot/blob/v2.15.6/app/chain/storage.py)。
+离线桩不代替真实宿主、115账户和事件投递验收。整理预识别失败、宿主停止及未投递事件需要检查宿主历史。

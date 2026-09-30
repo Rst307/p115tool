@@ -107,12 +107,9 @@ class Service:
             raise MissingFile("No share source")
         return obj
 
-    def ingest(self, file, path=None, title=None, tmdb_id=None, allow_auto_delete=True, defer_archive=False, media_type=None, season=None):
+    def ingest(self, file, path=None, title=None, tmdb_id=None, allow_auto_delete=True, defer_archive=False, media_type=None, season=None, category=None):
         self.available()
         path = virtual_path(path or file.path or "/" + file.name)
-        if self.config.auto_organize_enabled:
-            from .auto_organize import mapped_path
-            path=mapped_path(self,file,path)
         with self._maintenance:
             pending = self.db.one("SELECT p.media_id FROM organize_plans p JOIN normal_objects n ON n.media_id=p.media_id WHERE n.file_id=? AND p.state<>'DONE'", (file.file_id,))
             if pending:
@@ -128,13 +125,17 @@ class Service:
                 (media.id, int(self.config.auto_delete and allow_auto_delete),time.time()))
             if media_type is not None:
                 self.groups.metadata(media.id, media_type, season, tmdb_id)
+            if category is not None:
+                from .organizer import portable_title
+                classification = {'type': {'MOVIE': '电影', 'TV': '电视剧'}.get(media_type, '未识别'),
+                                  'category': portable_title(category), 'provider': 'MoviePilot'}
+                self.db.execute('INSERT INTO settings VALUES(?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value',
+                                (f'strm_classification:{media.id}', json.dumps(classification)))
             if self.config.auto_generate:
                 self.strm.generate(media.id)
                 # Do not reset a partially completed archive's durable checkpoint.
                 if media.status == "DISCOVERED":
                     self.db.transition(media.id, "READY")
-            if not defer_archive and self.config.auto_organize_enabled:
-                media=self.automatic_organize(media.id)
             if not defer_archive and self.config.storage_policy(media.virtual_path, file.size) == "SHARE":
                 if not self.config.share_enabled:
                     raise SafetyError("SHARE policy requires share_enabled")
@@ -184,15 +185,15 @@ class Service:
             from .scanner import reconcile_sources
             reconcile_sources(self, snapshots, counts)
             if self.config.auto_organize_enabled:
-                ready=[]
                 for mid in dict.fromkeys(imported):
                     try:
                         self.automatic_organize(mid)
-                        ready.append(mid)
                     except (ToolError,ValueError,OSError):
                         counts['errors']+=1
                         self.db.log('scan_organize','FAILED',mid,'Automatic organize incomplete; archive not submitted')
-                imported=ready
+                # MoviePilot runs organization asynchronously. Do not archive the
+                # original before its TransferComplete event returns the target.
+                imported=[]
             # Archive only after enumeration succeeds, so all known season/movie
             # files are ingested before the immutable member snapshot is made.
             processed = set()
@@ -281,6 +282,8 @@ class Service:
             group = self.groups.membership(mid)
             if group and group['state'] != 'READY':
                 raise SafetyError('Pending share group requires group reconciliation')
+            from .auto_organize import archive_guard
+            archive_guard(self, mid)
             if self.db.one("SELECT media_id FROM organize_plans WHERE media_id=? AND state<>'DONE'", (mid,)):
                 raise SafetyError("Pending organize plan must be reconciled before archive")
             if media.source_deleted:
@@ -619,52 +622,12 @@ class Service:
         return execute(self,mid,resume=resume,recognizer=recognizer)
 
     def automatic_organize_status(self,mid):
-        self.db.media(mid)
-        row=self.db.one('SELECT value FROM settings WHERE name=?',(f'auto_organize:{mid}',))
-        if not row:
-            return {'media_id':mid,'state':'NOT_PLANNED'}
-        plan=json.loads(row['value'])
-        remote=self.db.one('SELECT state FROM organize_plans WHERE media_id=?',(mid,))
-        return {'media_id':mid,'state':plan['state'],'root_cid':plan['root'],'virtual_path':plan['target']['virtual_path'],
-            'parent_id':plan.get('parent_id'),'remote_state':remote['state'] if remote else None}
+        from .auto_organize import status
+        return status(self, mid)
 
     def organize(self, mid, parent_id, name, path):
         self.available()
-        path = virtual_path(path)
-        virtual_path("/" + name)
-        if "/" in name or not str(parent_id).isdigit():
-            raise ValueError("Invalid organize destination")
-        if Path(path).name != name:
-            raise ValueError("Virtual filename must match organized filename")
-        with self._maintenance, self.lock(mid):
-            media = self.db.media(mid)
-            if media.source_deleted or media.storage_type != "NORMAL":
-                raise SafetyError("Only normal, non-deleted sources may be organized")
-            plan = self.db.one("SELECT * FROM organize_plans WHERE media_id=?", (mid,))
-            if plan and plan["state"] != "DONE":
-                raise SafetyError("A pending organize plan requires reconciliation")
-            obj = self.normal(mid)
-            source = self.client.stat(obj["file_id"])
-            if not self.expected(media).matches(source):
-                raise SafetyError("Source identity changed")
-            if Path(source.name).suffix.lower() != Path(name).suffix.lower():
-                raise SafetyError("115 organize cannot change the media extension")
-            if self.db.one("SELECT id FROM media WHERE virtual_path=? AND id<>?", (path, mid)):
-                raise SafetyError("Virtual destination already exists")
-            # fs_move uses the OLD filename; checking just the rename target can
-            # otherwise overwrite an unrelated file before rename even begins.
-            self._organize_collision(source, str(parent_id), name)
-            self.db.execute("INSERT INTO organize_plans VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(media_id) DO UPDATE SET file_id=excluded.file_id,old_parent=excluded.old_parent,old_name=excluded.old_name,new_parent=excluded.new_parent,new_name=excluded.new_name,virtual_path=excluded.virtual_path,sha1=excluded.sha1,size=excluded.size,state=excluded.state,updated_at=excluded.updated_at",
-                            (mid, source.file_id, source.parent_id, source.name, str(parent_id), name, path,
-                             source.sha1, source.size, "PLANNED", time.time()))
-            self.db.log("organize", "PLANNED", mid)
-            self._continue_organize(mid)
-            return self.db.media(mid)
-
-    def _organize_collision(self, source, parent_id, name):
-        siblings = list(self.client.list_files(parent_id))
-        if any(f.name in (source.name, name) and f.file_id != source.file_id for f in siblings):
-            raise SafetyError("Remote destination already contains source or target name")
+        raise SafetyError("Organization is managed by MoviePilot; use its directory and naming rules")
 
     def _organize_state(self, mid, state):
         self.db.execute("UPDATE organize_plans SET state=?,updated_at=? WHERE media_id=?", (state, time.time(), mid))
@@ -677,25 +640,6 @@ class Service:
                 or file.name not in (plan["old_name"], plan["new_name"])):
             raise SafetyError("Remote organize identity changed outside the recorded plan")
         return file
-
-    def _continue_organize(self, mid):
-        plan = self.db.one("SELECT * FROM organize_plans WHERE media_id=?", (mid,))
-        source = self._organize_current(plan)
-        self._organize_collision(source, plan["new_parent"], plan["new_name"])
-        if source.parent_id != plan["new_parent"]:
-            self._organize_state(mid, "MOVING")
-            self.client.move(source.file_id, plan["new_parent"])
-            source = self._organize_current(plan)
-            if source.parent_id != plan["new_parent"]:
-                raise SafetyError("Move result does not match organize plan")
-        self._organize_state(mid, "MOVED")
-        if source.name != plan["new_name"]:
-            self._organize_state(mid, "RENAMING")
-            self.client.rename(source.file_id, plan["new_name"])
-            source = self._organize_current(plan)
-            if source.name != plan["new_name"]:
-                raise SafetyError("Rename result does not match organize plan")
-        self._finish_organize(mid, plan, source)
 
     def _finish_organize(self, mid, plan, source):
         if source.parent_id != plan["new_parent"] or source.name != plan["new_name"]:
@@ -716,6 +660,8 @@ class Service:
 
     def reconcile_organize(self, mid, resume=False):
         self.available()
+        if resume:
+            raise SafetyError("Legacy organize recovery is read-only; complete remaining operations in MoviePilot")
         with self._maintenance, self.lock(mid):
             plan = self.db.one("SELECT * FROM organize_plans WHERE media_id=?", (mid,))
             if not plan:
@@ -723,9 +669,6 @@ class Service:
             source = self._organize_current(plan)
             if source.parent_id == plan["new_parent"] and source.name == plan["new_name"]:
                 self._finish_organize(mid, plan, source)
-            elif resume:
-                # Only explicit user confirmation can authorize remaining writes.
-                self._continue_organize(mid)
             else:
                 observed = "MOVED" if source.parent_id == plan["new_parent"] else "PLANNED"
                 self._organize_state(mid, observed)

@@ -63,6 +63,8 @@ class ShareGroups:
         rows = []
         for mid in sorted(ids):
             media = self.db.media(mid)
+            from .auto_organize import archive_guard
+            archive_guard(self.service, mid)
             if self.db.one("SELECT media_id FROM organize_plans WHERE media_id=? AND state<>'DONE'", (mid,)):
                 raise SafetyError('Pending organize plan blocks group archive')
             if media.status in ('SOURCE_DELETING', 'FAILED_DELETE'):

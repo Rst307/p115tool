@@ -27,7 +27,8 @@ except ModuleNotFoundError as exc:
         return function
 else:
     def transfer_listener(function):
-        return eventmanager.register(EventType.TransferComplete)(function)
+        function = eventmanager.register(EventType.TransferComplete)(function)
+        return eventmanager.register(EventType.TransferFailed)(function)
 
 
 def get_value(obj, key, default=None):
@@ -38,7 +39,7 @@ class P115Tool(_PluginBase):
     plugin_name = '115 工具箱'
     plugin_desc = '统一 STRM、302 播放、分享虚拟存储、归档和恢复缓存'
     plugin_icon = 'https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png'
-    plugin_version = '0.1.4'
+    plugin_version = '0.1.5'
     plugin_author = 'Rst307'
     author_url = 'https://github.com/Rst307'
     plugin_config_prefix = 'p115tool_'
@@ -167,6 +168,18 @@ class P115Tool(_PluginBase):
                 return
             data = get_value(event, 'event_data', {}) or {}
             transfer = get_value(data, 'transferinfo')
+            source_item = get_value(data, 'fileitem')
+            if transfer and source_item:
+                try:
+                    from .auto_organize import observe_result
+                    observe_result(self._service, source_item,
+                                   get_value(transfer, 'target_item'),
+                                   get_value(transfer, 'success', True) is True)
+                except Exception:
+                    logger.warning('MoviePilot整理结果记录失败；插件目录扫描仍可恢复媒体索引')
+            if transfer and get_value(transfer, 'success', True) is not True:
+                self._service.db.log('moviepilot_organize', 'FAILED', detail='MoviePilot reported organize failure; source retained')
+                return
             item = get_value(transfer, 'target_item')
             if not item or get_value(item, 'storage') not in ('115网盘', '115云盘', 'u115'):
                 return
@@ -184,7 +197,8 @@ class P115Tool(_PluginBase):
                 season = get_value(meta,'begin_season', get_value(meta,'season'))
                 self._service.jobs.enqueue_transfer({'file_id': fid, 'virtual_path': path,
                     'title': get_value(info, 'title'), 'tmdb_id': get_value(info, 'tmdb_id'),
-                    'allow_delete': self._config.auto_delete, 'media_type':kind,'season':season})
+                    'allow_delete': self._config.auto_delete, 'media_type':kind,'season':season,
+                    'category': get_value(info, 'category')})
                 self._service.db.log('transfer', 'QUEUED')
             except Exception:
                 self._service.db.log('transfer', 'FAILED', detail='Transfer processing failed; source remains intact')
@@ -204,7 +218,7 @@ class P115Tool(_PluginBase):
             ('STRM', [('strm_dir', 'STRM 输出目录', 'text'), ('auto_generate', '自动生成 STRM', 'switch'), ('strm_by_type', 'STRM按类型分类（电影／电视剧）', 'switch'), ('strm_by_category', 'STRM按类别分类（使用MoviePilot分类规则）', 'switch'), ('clean_missing_strm', '完整扫描后清理已确认失效的普通STRM（默认关闭）', 'switch'), ('source_cids_json', '扫描目录 JSON，例如 [{"cid":"123","prefix":"/电影"}]', 'textarea')]),
             ('302播放', [('playback_prefix', '接口前缀（MoviePilot 请保留默认）', 'text'), ('url_cache_ttl', '直链缓存秒数', 'number'), ('max_concurrency', '最大并发', 'number')]),
             ('虚拟分享', [('share_enabled', '启用分享存储', 'switch'), ('auto_repair_share', '健康检查自动重新分享（默认关闭；保留源/缓存，不删除）', 'switch'), ('share_strategy', '分享策略：auto/file/movie/season', 'text'), ('group_settle_seconds', '整理事件分组等待时间（秒）', 'number'), ('auto_archive', '自动创建并验证分享', 'switch'), ('policies_json', '文件级存储规则 JSON', 'textarea')]),
-            ('整理', [('auto_organize_enabled', '启用自动识别整理（默认关闭）', 'switch'), ('organize_root_cid', '115整理目标根目录CID（不可为根目录）', 'text'), ('scan_interval', '目录同步间隔（秒）', 'number'), ('organize_templates_json', '电影/电视剧路径模板 JSON（MOVIE/TV）', 'textarea')]),
+            ('整理', [('auto_organize_enabled', '委托MoviePilot自动整理（使用宿主整理规则，默认关闭）', 'switch'), ('scan_interval', '目录同步间隔（秒）', 'number')]),
             ('缓存', [('cache_cid', '115 临时缓存目录 CID（不可为根目录）', 'text'), ('cache_max_bytes', '缓存容量上限（字节）', 'number'), ('cache_ttl', '无访问过期时间（秒）', 'number'), ('playback_lease', '播放保护时间（秒，至少等于过期时间）', 'number')]),
             ('安全', [('delete_source', '允许验证后删除源文件至回收站', 'switch'), ('auto_delete', '自动归档后删除源文件（高风险，需同时启用允许删除）', 'switch'), ('api_key', '管理 API Key（32字符以上）', 'password'), ('webhook_key', 'Emby Webhook Key（32字符以上）', 'password')]),
             ('高级', [('request_timeout', '115 请求超时（秒）', 'number'), ('health_batch', '每次健康检查数量', 'number'), ('emby_path_mappings_json', 'Emby目录映射 JSON：emby/local（local须在STRM目录下）', 'textarea'), ('allowed_cdn_suffixes_json', '允许的 CDN 域名后缀 JSON', 'textarea'), ('media_extensions_json', '视频扩展名 JSON', 'textarea')]),
@@ -225,7 +239,7 @@ class P115Tool(_PluginBase):
         if not self._service and self._config == Config():
             defaults['data_dir'] = str(self.get_data_path())
             defaults['playback_prefix'] = '/api/v1/plugin/P115Tool'
-        for name in ('source_cids', 'policies', 'allowed_cdn_suffixes', 'media_extensions', 'emby_path_mappings', 'organize_templates'):
+        for name in ('source_cids', 'policies', 'allowed_cdn_suffixes', 'media_extensions', 'emby_path_mappings'):
             defaults[name + '_json'] = json.dumps(defaults[name], ensure_ascii=False)
         form = [{'component': 'VAlert', 'props': {'type': 'warning', 'variant': 'tonal'},
                  'text': '分享不是可靠备份。删除源文件可能使分享失效；先用可丢弃文件实测。默认保留源文件且永不自动清空回收站。'},

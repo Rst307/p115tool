@@ -20,7 +20,7 @@ def folders(config, db, media, refresh=False):
     key = f'strm_classification:{media.id}'
     cached = db.one('SELECT value FROM settings WHERE name=?', (key,))
     data = json.loads(cached['value']) if cached else {'type': '未识别', 'category': '未分类'}
-    if refresh:
+    if refresh and data.get('provider') != 'MoviePilot':
         try:
             data = recognize(media.virtual_path)
         except Exception:

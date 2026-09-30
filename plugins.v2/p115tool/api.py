@@ -69,7 +69,7 @@ class ReconcileOrganizeRequest(MediaRequest):
 
 
 class JobRequest(StrictModel):
-    kind: Literal['transfer', 'scan', 'health', 'cleanup', 'generate', 'archive', 'archive_group', 'restore', 'organize','auto_organize']
+    kind: Literal['transfer', 'scan', 'health', 'cleanup', 'generate', 'archive', 'archive_group', 'restore', 'auto_organize']
     payload: dict = Field(default_factory=dict)
     confirmation: str = ''
 
@@ -353,7 +353,7 @@ class API:
 
     def preview_organize(self, request: Request, body: MediaRequest):
         service=self.authorize(request)
-        from .organizer import preview
+        from .auto_organize import preview
         return self.run(service,preview,service,body.media_id)
 
     def automatic_organize(self, request: Request, body: ReconcileOrganizeRequest):

@@ -7,7 +7,7 @@ from .config import Config
 from .transport import unique_object
 
 JSON_FIELDS = ('source_cids', 'policies', 'allowed_cdn_suffixes',
-               'media_extensions', 'emby_path_mappings', 'organize_templates')
+               'media_extensions', 'emby_path_mappings')
 
 
 def form_data(config):

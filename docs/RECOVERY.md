@@ -1,5 +1,7 @@
 # 持久任务和中断恢复
 
+0.1.5整理改由MoviePilot执行，旧整理检查点的resume禁止写操作；本说明中的旧整理计划仅供历史对账，当前流程见[AUTO_ORGANIZE.md](AUTO_ORGANIZE.md)。
+
 以下路径均相对于 `/p115tool`（独立服务）或 `/api/v1/plugin/P115Tool`（MoviePilot）。管理请求必须附带独立管理密钥。
 
 ## 后台队列
@@ -17,7 +19,7 @@ Content-Type: application/json
 {"kind":"archive","payload":{"media_id":1}}
 ```
 
-结果返回任务 ID、PENDING状态，不返回分享密码、直链或payload。后续用 `GET /jobs?limit=100&offset=0` 查询。支持 transfer、scan、health、cleanup、generate、archive、restore、organize。
+结果返回任务 ID、PENDING状态，不返回分享密码、直链或payload。后续用 `GET /jobs?limit=100&offset=0` 查询。支持 transfer、scan、health、cleanup、generate、archive、restore、auto_organize；0.1.5起旧organize写任务不再执行。
 
 队列归档删除与同步删除一样需要显式确认：
 

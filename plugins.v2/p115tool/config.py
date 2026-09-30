@@ -5,7 +5,6 @@ from urllib.parse import urlsplit
 import os
 import re
 from copy import deepcopy
-from .organizer import DEFAULT_TEMPLATES
 
 
 @dataclass
@@ -34,7 +33,6 @@ class Config:
     strm_by_category: bool = False
     clean_missing_strm: bool = False
     auto_organize_enabled: bool = False
-    organize_root_cid: str = ''
     cache_ttl: int = 21600
     cache_max_bytes: int = 300 * 1024**3
     playback_lease: int = 21600
@@ -48,20 +46,12 @@ class Config:
     allowed_cdn_suffixes: list = field(default_factory=lambda: ["115.com", "115cdn.com", "115cdn.net", "115cdn.cn"])
     media_extensions: list = field(default_factory=lambda: [".mkv", ".mp4", ".avi", ".mov", ".ts", ".m2ts", ".iso", ".wmv"])
     policies: list = field(default_factory=list)
-    organize_templates: dict = field(default_factory=lambda: DEFAULT_TEMPLATES.copy())
 
     @classmethod
     def from_dict(cls, data=None):
         data = deepcopy(dict(data or {}))
         allowed = {f.name for f in fields(cls)}
         cfg = cls(**{k: v for k, v in data.items() if k in allowed})
-        if not isinstance(cfg.organize_root_cid,str) or (cfg.organize_root_cid and
-                (not re.fullmatch(r'[0-9]+',cfg.organize_root_cid) or int(cfg.organize_root_cid)==0)):
-            raise ValueError('organize_root_cid must be a non-root numeric CID')
-        if cfg.auto_organize_enabled and not cfg.organize_root_cid:
-            raise ValueError('Automatic organize requires an explicit destination root CID')
-        from .organizer import validate_templates
-        validate_templates(cfg.organize_templates)
         if type(cfg.account_status_ttl) is not int or not 1 <= cfg.account_status_ttl <= 3600:
             raise ValueError('account_status_ttl must be 1..3600 seconds')
         if cfg.auto_repair_share and not cfg.share_enabled:

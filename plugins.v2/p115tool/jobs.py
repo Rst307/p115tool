@@ -15,7 +15,7 @@ class DurableJobs:
     log retains detailed operation checkpoints; payloads never contain credentials.
     """
     SHAPES = {
-        'transfer': ({'file_id', 'virtual_path', 'title', 'tmdb_id', 'allow_delete', 'media_type', 'season'}, {'file_id', 'virtual_path'}),
+        'transfer': ({'file_id', 'virtual_path', 'title', 'tmdb_id', 'allow_delete', 'media_type', 'season', 'category'}, {'file_id', 'virtual_path'}),
         'archive_policy': ({'media_id', 'allow_delete'}, {'media_id'}),
         'archive_group': ({'media_ids', 'delete'}, {'media_ids'}),
         'scan': ({'allow_delete'}, set()),
@@ -24,7 +24,6 @@ class DurableJobs:
         'generate': ({'media_id'}, {'media_id'}),
         'archive': ({'media_id', 'delete'}, {'media_id'}),
         'restore': ({'media_id'}, {'media_id'}),
-        'organize': ({'media_id', 'parent_id', 'name', 'virtual_path'}, {'media_id', 'parent_id', 'name', 'virtual_path'}),
         'auto_organize': ({'media_id'}, {'media_id'}),
     }
 
@@ -45,6 +44,9 @@ class DurableJobs:
         if set(payload) - allowed or required - set(payload):
             raise ValueError('Invalid job fields')
         data = dict(payload)
+        if data.get('category') is not None:
+            from .organizer import portable_title
+            data['category'] = portable_title(data['category'])
         for name in ('allow_delete', 'delete', 'deep'):
             if name in data and not isinstance(data[name], bool):
                 raise ValueError('Boolean job flags must be actual booleans')
@@ -190,9 +192,7 @@ class DurableJobs:
         if kind == 'transfer':
             file = service.client.stat(data['file_id'])
             media=service.ingest(file, data['virtual_path'], data.get('title'), data.get('tmdb_id'), allow_auto_delete=data['allow_delete'],
-                defer_archive=True,media_type=data.get('media_type'),season=data.get('season'))
-            if service.config.auto_organize_enabled:
-                media=service.automatic_organize(media.id)
+                defer_archive=True,media_type=data.get('media_type'),season=data.get('season'),category=data.get('category'))
             if service.config.storage_policy(media.virtual_path,media.size)=='SHARE':
                 self.enqueue('archive_policy',{'media_id':media.id,'allow_delete':data['allow_delete']},delay=service.config.group_settle_seconds)
             return media
@@ -212,8 +212,6 @@ class DurableJobs:
             return service.archive(data['media_id'], delete=data.get('delete', False))
         if kind == 'restore':
             return service.restore(data['media_id'])
-        if kind == 'organize':
-            return service.organize(data['media_id'], data['parent_id'], data['name'], data['virtual_path'])
         if kind == 'auto_organize':
             return service.automatic_organize(data['media_id'])
         raise ValueError('Unknown job kind')

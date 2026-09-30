@@ -163,6 +163,7 @@ def read_data(plugin, payload):
                 cache = db.one('SELECT created_at,last_access_at,expire_at,lease_until,state FROM cache_objects WHERE media_id=?', (mid,))
                 organize = db.one('SELECT state,updated_at FROM organize_plans WHERE media_id=?', (mid,))
                 return {'media': media, 'share': share, 'cache': cache, 'organize': organize,
+                        'moviepilot_organize': service.automatic_organize_status(mid),
                         'history': db.all('SELECT operation,state,detail,created_at FROM tasks WHERE media_id=? ORDER BY id DESC LIMIT 50', (mid,))}
             if kind in ('groups', 'cache', 'jobs', 'ledger'):
                 table = {'groups': 'share_groups', 'cache': 'cache_objects', 'jobs': 'jobs', 'ledger': 'recycle_intents'}[kind]
@@ -283,7 +284,7 @@ def page(plugin):
             actions = [button(plugin, '生成STRM', 'generate', media_id=mid),
                        button(plugin, '归档分享（保留源）', 'archive', media_id=mid)]
             if media.storage_type == 'NORMAL' and not media.source_deleted:
-                actions.append(button(plugin, '自动识别整理', 'auto_organize', media_id=mid))
+                actions.append(button(plugin, '委托MoviePilot整理', 'auto_organize', media_id=mid))
             if media.storage_type != 'NORMAL':
                 actions.extend([button(plugin, '恢复缓存', 'restore', media_id=mid),
                                 button(plugin, '转存只读对账', 'restore_reconcile', media_id=mid),
