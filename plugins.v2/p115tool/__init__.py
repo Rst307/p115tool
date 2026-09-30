@@ -39,7 +39,7 @@ class P115Tool(_PluginBase):
     plugin_name = '115 工具箱'
     plugin_desc = '统一 STRM、302 播放、分享虚拟存储、归档和恢复缓存'
     plugin_icon = 'https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png'
-    plugin_version = '0.1.9'
+    plugin_version = '0.1.10'
     plugin_author = 'Rst307'
     author_url = 'https://github.com/Rst307'
     plugin_config_prefix = 'p115tool_'

@@ -183,6 +183,10 @@ class DurableJobs:
             except Exception as exc:
                 state = 'FAILED' if row['kind'] in ('health', 'generate') else 'NEEDS_ATTENTION'
                 error = type(exc).__name__ + ': operation failed; inspect durable checkpoints'
+                from .postprocess import OutputStageError, OUTPUT_REASONS
+                if isinstance(exc, OutputStageError) and exc.reason in OUTPUT_REASONS:
+                    error = exc.reason + ': ' + OUTPUT_REASONS[exc.reason]
+                    self.db.log(row['kind'], exc.reason)
             self.db.execute('UPDATE jobs SET state=?,error=?,updated_at=? WHERE id=?', (state, error, time.time(), row['id']))
             self.db.log('job', state, detail=f"job_id={row['id']}; kind={row['kind']}")
             from .activity import activity

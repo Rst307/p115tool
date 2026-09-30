@@ -3,6 +3,35 @@ import json
 from .models import SafetyError
 
 
+OUTPUT_REASONS = {
+    'FAILED_SCAN_REQUIRED': '没有成功扫描快照；请先立即扫描整理后目录，修复扫描错误后再生成STRM',
+    'FAILED_SCAN_ROOTS_CHANGED': '扫描目录配置已变化；请重新扫描成功后再生成STRM',
+    'FAILED_OUTPUT_PARTIAL': '部分输出失败；请按媒体ID查看本次输出失败原因',
+}
+
+
+class OutputStageError(SafetyError):
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__(OUTPUT_REASONS[reason])
+
+
+def strm_failure_reason(exc):
+    # Only fixed local validation messages/types are exposed, never exception text.
+    if isinstance(exc, PermissionError):
+        return 'FAILED_STRM_PERMISSION'
+    if isinstance(exc, OSError):
+        return 'FAILED_STRM_IO'
+    if isinstance(exc, UnicodeError):
+        return 'FAILED_STRM_ENCODING'
+    if isinstance(exc, SafetyError):
+        if str(exc) in ('Refusing to overwrite an unowned/edited STRM',
+                        'STRM path already owned by another media object'):
+            return 'FAILED_STRM_CONFLICT'
+        return 'FAILED_STRM_SAFETY'
+    return 'FAILED_STRM_INTERNAL'
+
+
 def run_batch(service, kind, automatic=False, delete=False):
     service.available()
     if kind == 'share_batch' and not service.config.share_enabled:
@@ -13,10 +42,10 @@ def run_batch(service, kind, automatic=False, delete=False):
         raise SafetyError('Automatic source deletion is disabled')
     snapshot = service.db.one('SELECT value FROM settings WHERE name=?', ('organized_scan_ids',))
     if snapshot is None:
-        raise SafetyError('Scan organized directories before starting output tasks')
+        raise OutputStageError('FAILED_SCAN_REQUIRED')
     roots = service.db.one('SELECT value FROM settings WHERE name=?', ('organized_scan_roots',))
     if not roots or json.loads(roots['value']) != service.config.source_cids:
-        raise SafetyError('Directory configuration changed; scan again before starting output tasks')
+        raise OutputStageError('FAILED_SCAN_ROOTS_CHANGED')
     ids = json.loads(snapshot['value'])
     # Restrict stale snapshots to the currently configured directory prefixes.
     prefixes = [r.get('prefix', '/') if isinstance(r, dict) else '/' for r in service.config.source_cids]
@@ -55,10 +84,11 @@ def run_batch(service, kind, automatic=False, delete=False):
                            and selected(member)]
                 service.groups.archive(members, delete=delete, label=key, generate_strm=delete)
             done += 1
-        except Exception:
+        except Exception as exc:
             failed += 1
-            service.db.log(kind, 'FAILED', mid, 'Output stage failed; inspect durable checkpoints')
+            reason = strm_failure_reason(exc) if kind == 'generate_batch' else 'FAILED'
+            service.db.log(kind, reason, mid, 'Output stage failed; inspect durable checkpoints')
     service.db.log(kind, 'DONE' if not failed else 'FAILED', detail=f'completed={done}; failed={failed}')
     if failed:
-        raise SafetyError('Output stage incomplete; inspect individual checkpoints')
+        raise OutputStageError('FAILED_OUTPUT_PARTIAL')
     return {'completed': done, 'failed': failed}
