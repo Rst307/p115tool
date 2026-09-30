@@ -1,182 +1,67 @@
-from __future__ import annotations
 from dataclasses import dataclass, field, fields
+import json
+import re
 from pathlib import Path
 from urllib.parse import urlsplit
-import os
-import re
-from copy import deepcopy
-
 
 @dataclass
 class Config:
     enabled: bool = False
-    cookie: str = ""
-    data_dir: str = "./data/p115tool"
-    strm_dir: str = "./strm"
-    public_url: str = "http://localhost:8000"
-    playback_prefix: str = "/p115tool"
-    api_key: str = ""
-    webhook_key: str = ""
-    emby_path_mappings: list = field(default_factory=list)
+    cookie: str = ''
+    data_dir: str = './data/p115tool'
+    strm_dir: str = './strm'
+    public_url: str = 'http://localhost:3000'
+    playback_prefix: str = '/api/v1/plugin/P115Tool'
     source_cids: list = field(default_factory=list)
-    cache_cid: str = ""
-    restore_original: bool = True
-    share_enabled: bool = False
-    share_strategy: str = "auto"
-    group_settle_seconds: int = 300
-    delete_source: bool = False
-    safe_mode: bool = True
-    auto_archive: bool = False
-    auto_repair_share: bool = False
-    auto_delete: bool = False
-    auto_generate: bool = True
-    strm_by_type: bool = False
-    strm_by_category: bool = False
-    clean_missing_strm: bool = False
-    auto_organize_enabled: bool = False
-    cache_ttl: int = 21600
-    cache_max_bytes: int = 300 * 1024**3
-    playback_lease: int = 21600
-    url_cache_ttl: int = 60
-    max_concurrency: int = 2
+    scheduled: bool = False
+    scan_time: str = '03:00'
     request_timeout: int = 30
-    scan_time: str = "03:00"
-    scan_interval: int = 3600
-    health_batch: int = 20
-    account_status_ttl: int = 300
-    statistics_utc_offset: int = 480
-    allowed_cdn_suffixes: list = field(default_factory=lambda: ["115.com", "115cdn.com", "115cdn.net", "115cdn.cn"])
-    media_extensions: list = field(default_factory=lambda: [".mkv", ".mp4", ".avi", ".mov", ".ts", ".m2ts", ".iso", ".wmv"])
-    policies: list = field(default_factory=list)
+    allowed_cdn_suffixes: list = field(default_factory=lambda: ['115.com','115cdn.com','115cdn.net','115cdn.cn'])
+    media_extensions: list = field(default_factory=lambda: ['.mkv','.mp4','.avi','.mov','.ts','.m2ts','.iso','.wmv','.flv','.m4v','.mpg','.mpeg'])
 
     @classmethod
-    def from_dict(cls, data=None):
-        data = deepcopy(dict(data or {}))
-        allowed = {f.name for f in fields(cls)}
-        cfg = cls(**{k: v for k, v in data.items() if k in allowed})
-        if not isinstance(cfg.scan_time, str) or not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", cfg.scan_time):
-            raise ValueError("scan_time must be HH:MM")
-        if type(cfg.account_status_ttl) is not int or not 1 <= cfg.account_status_ttl <= 3600:
-            raise ValueError('account_status_ttl must be 1..3600 seconds')
-        if cfg.auto_repair_share and not cfg.share_enabled:
-            raise ValueError('Automatic share repair requires share_enabled')
-        if type(cfg.statistics_utc_offset) is not int or not -720 <= cfg.statistics_utc_offset <= 840:
-            raise ValueError('statistics_utc_offset must be minutes in -720..840')
-        for name in ('cookie','data_dir','strm_dir','public_url','playback_prefix','api_key','webhook_key','cache_cid','share_strategy'):
-            value=getattr(cfg,name)
-            if not isinstance(value,str) or any(ord(c)<32 or 0xD800<=ord(c)<=0xDFFF for c in value):
-                raise ValueError(f'{name} must be a valid string without control characters')
-        if not cfg.data_dir.strip() or not cfg.strm_dir.strip():
-            raise ValueError('data_dir and strm_dir cannot be empty')
-        if cfg.cache_cid and not re.fullmatch(r'[0-9]+',cfg.cache_cid):
-            raise ValueError('cache_cid must be numeric')
-        if cfg.cache_cid and int(cfg.cache_cid)==0:
-            raise ValueError('cache_cid cannot be the drive root')
-        for name in ('api_key','webhook_key'):
-            if getattr(cfg,name) and len(getattr(cfg,name))<32:
-                raise ValueError('Configured keys must have at least 32 characters')
-        for f in fields(cls):
-            value = getattr(cfg, f.name)
-            if isinstance(f.default, bool) and not isinstance(value, bool):
-                raise ValueError(f"{f.name} must be a boolean")
-        for name in ("cache_ttl", "cache_max_bytes", "playback_lease", "url_cache_ttl", "max_concurrency", "request_timeout", "scan_interval", "health_batch", "group_settle_seconds"):
-            value = getattr(cfg, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-                raise ValueError(f"{name} must be a positive integer")
-        for name in ("source_cids", "allowed_cdn_suffixes", "media_extensions", "policies", "emby_path_mappings"):
-            if not isinstance(getattr(cfg, name), list):
-                raise ValueError(f"{name} must be a list")
-        from .strm import virtual_path
-        from .models import SafetyError
-        def directory_prefix(value):
-            if not isinstance(value,str):
-                raise ValueError('Invalid directory prefix')
-            if value!='/':
-                try:
-                    virtual_path(value.rstrip('/'))
-                except SafetyError:
-                    raise ValueError('Invalid directory prefix') from None
-        for root in cfg.source_cids:
-            if isinstance(root,dict):
-                if set(root)-{'cid','prefix'} or 'cid' not in root:
-                    raise ValueError('Invalid source directory fields')
-                cid=root['cid']
-                prefix=root.get('prefix','/')
-                directory_prefix(prefix)
-            else:
-                cid=root
-            if isinstance(cid,bool) or not isinstance(cid,(int,str)) or not re.fullmatch(r'[0-9]+',str(cid)):
-                raise ValueError('Source CID must be numeric')
-        for suffix in cfg.allowed_cdn_suffixes:
-            if not isinstance(suffix,str) or len(suffix)>253 or not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+',suffix):
-                raise ValueError('Invalid CDN domain suffix')
-            if all(part.isdigit() for part in suffix.split('.')):
-                raise ValueError('IP suffixes are not allowed')
-        if not cfg.allowed_cdn_suffixes:
-            raise ValueError('At least one CDN domain suffix is required')
-        if any(not isinstance(ext,str) or not re.fullmatch(r'\.[a-z0-9]+',ext) for ext in cfg.media_extensions):
-            raise ValueError('Invalid media extension')
-        for rule in cfg.policies:
-            if not isinstance(rule,dict) or set(rule)-{'storage','prefix','min_bytes','max_bytes'}:
-                raise ValueError('Invalid storage policy fields')
-            if rule.get('storage')=='SHARE_VIRTUAL':
-                rule['storage']='SHARE'
-            if rule.get('storage') not in ('NORMAL','SHARE'):
-                raise ValueError('Invalid storage backend')
-            prefix=rule.get('prefix','/')
-            directory_prefix(prefix)
-            minimum=rule.get('min_bytes',0)
-            maximum=rule.get('max_bytes',2**63-1)
-            if type(minimum) is not int or type(maximum) is not int or not 0<=minimum<=maximum<=2**63-1:
-                raise ValueError('Invalid policy size range')
-            if rule['storage']=='SHARE' and not cfg.share_enabled:
-                raise ValueError('SHARE policy requires share_enabled')
-        parsed = urlsplit(cfg.public_url)
-        if parsed.scheme not in ("https", "http") or not parsed.hostname or parsed.username or parsed.query or parsed.fragment:
-            raise ValueError("public_url must be an absolute HTTP(S) URL without credentials/query/fragment")
-        if not cfg.playback_prefix.startswith("/") or cfg.playback_prefix.startswith('//') or any(x in cfg.playback_prefix for x in ("..", "?", "#", "\\")):
-            raise ValueError("invalid playback_prefix")
-        if not cfg.safe_mode:
-            raise ValueError("Safety checks cannot be disabled")
-        if cfg.delete_source and not cfg.share_enabled:
-            raise ValueError("Source deletion requires share_enabled")
-        if cfg.auto_archive and not cfg.share_enabled:
-            raise ValueError('auto_archive requires share_enabled')
-        if cfg.auto_delete and not (cfg.share_enabled and cfg.delete_source):
-            raise ValueError("auto_delete requires share_enabled and delete_source")
-        if cfg.share_strategy not in ("file", "movie", "season", "auto"):
-            raise ValueError("share_strategy must be file/movie/season/auto")
-        if cfg.group_settle_seconds > 86400:
-            raise ValueError('group_settle_seconds cannot exceed one day')
-        if cfg.max_concurrency > 16:
-            raise ValueError("max_concurrency must not exceed 16")
-        if cfg.request_timeout>120:
-            raise ValueError('request_timeout cannot exceed 120 seconds')
-        if cfg.playback_lease < cfg.cache_ttl:
-            raise ValueError("playback_lease must be at least cache_ttl")
-        cfg.data_dir = str(Path(cfg.data_dir).expanduser().resolve())
-        cfg.strm_dir = str(Path(cfg.strm_dir).expanduser().resolve())
-        from .emby import media_path
-        for mapping in cfg.emby_path_mappings:
-            if not isinstance(mapping,dict) or set(mapping)!={'emby','local'}:
-                raise ValueError('Path mappings require emby/local')
-            media_path(mapping['emby'])
-            media_path(mapping['local'])
-            if not Path(mapping['local']).resolve().is_relative_to(Path(cfg.strm_dir)):
-                raise ValueError('Local mapping must stay within strm_dir')
-        cfg.public_url = cfg.public_url.rstrip("/")
-        cfg.playback_prefix = cfg.playback_prefix.rstrip("/")
+    def from_dict(cls, data):
+        if not isinstance(data, dict): raise ValueError('Invalid config')
+        data = dict(data)
+        if 'source_cids_json' in data:
+            data['source_cids'] = json.loads(data.pop('source_cids_json'))
+        data = {k:v for k,v in data.items() if k in {f.name for f in fields(cls)}}
+        for k in ('enabled','scheduled'):
+            if k in data and type(data[k]) is not bool: raise ValueError('Invalid boolean')
+        if 'request_timeout' in data:
+            v=data['request_timeout']
+            if isinstance(v,str) and re.fullmatch(r'\d{1,3}',v): v=int(v)
+            if type(v) is not int or not 5<=v<=120: raise ValueError('Invalid timeout')
+            data['request_timeout']=v
+        cfg=cls(**data)
+        for k in ('cookie','data_dir','strm_dir','public_url','playback_prefix','scan_time'):
+            if not isinstance(getattr(cfg,k),str): raise ValueError('Invalid text')
+        if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',cfg.scan_time): raise ValueError('Invalid time')
+        cfg.public_url=cfg.public_url.rstrip('/')
+        url=urlsplit(cfg.public_url)
+        if url.scheme not in ('http','https') or not url.hostname or url.username or url.password or url.query or url.fragment or any(ord(c)<33 for c in cfg.public_url): raise ValueError('Invalid public URL')
+        if not re.fullmatch(r'/[A-Za-z0-9_/-]+',cfg.playback_prefix): raise ValueError('Invalid prefix')
+        if not cfg.strm_dir or not cfg.data_dir or Path(cfg.strm_dir).resolve()==Path(cfg.data_dir).resolve(): raise ValueError('Invalid directories')
+        if not isinstance(cfg.source_cids,list) or len(cfg.source_cids)>100: raise ValueError('Invalid sources')
+        sources=[]
+        for source in cfg.source_cids:
+            if isinstance(source,(str,int)) and not isinstance(source,bool): source={'cid':str(source),'prefix':'/'}
+            if not isinstance(source,dict) or set(source)-{'cid','prefix'}: raise ValueError('Invalid source')
+            cid=str(source.get('cid','')); prefix=source.get('prefix','/')
+            if not re.fullmatch(r'\d{1,20}',cid) or not isinstance(prefix,str): raise ValueError('Invalid source')
+            from .strm import safe_parts
+            if not prefix.startswith('/'): raise ValueError('Invalid source path')
+            if prefix!='/':
+                try: safe_parts(prefix.strip('/'))
+                except Exception: raise ValueError('Invalid source path') from None
+            if cid not in {s['cid'] for s in sources}: sources.append({'cid':cid,'prefix':prefix})
+        cfg.source_cids=sources
+        for k in ('media_extensions','allowed_cdn_suffixes'):
+            values=getattr(cfg,k)
+            if not isinstance(values,list) or not values or any(not isinstance(v,str) for v in values): raise ValueError('Invalid list')
+        if any(not re.fullmatch(r'\.[a-z0-9]{1,8}',v) for v in cfg.media_extensions): raise ValueError('Invalid extensions')
+        if any(not re.fullmatch(r'[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,}',v) for v in cfg.allowed_cdn_suffixes): raise ValueError('Invalid CDN domains')
         return cfg
 
-    def storage_policy(self, path, size):
-        for rule in self.policies:
-            if not isinstance(rule, dict) or rule.get("storage") not in ("NORMAL", "SHARE"):
-                raise ValueError("Invalid storage policy")
-            prefix = rule.get("prefix", "/").rstrip("/") + "/"
-            if (path.startswith(prefix) and size >= int(rule.get("min_bytes", 0))
-                    and size <= int(rule.get("max_bytes", 2**63 - 1))):
-                return rule["storage"]
-        return "SHARE" if self.auto_archive else "NORMAL"
-
-    def playback_url(self, token):
-        return f"{self.public_url}{self.playback_prefix}/play/{token}"
+    def playback_url(self,token):
+        return f'{self.public_url}{self.playback_prefix}/play/{token}'

@@ -1,102 +1,63 @@
-from __future__ import annotations
-from pathlib import Path, PurePosixPath
+"""STRM paths, local classification and atomic output. Never organizes remote files."""
+from pathlib import Path
 import os
 import re
 import tempfile
 from .models import SafetyError
 
+TYPES={'电影':'电影','Movies':'电影','movies':'电影','Movie':'电影','电视剧':'电视剧','TV':'电视剧','TV Shows':'电视剧','剧集':'电视剧','动漫':'动漫'}
 
-def virtual_path(value):
-    if not isinstance(value, str) or not value.startswith("/") or "\\" in value:
-        raise SafetyError("Virtual path must be an absolute POSIX path")
-    components = value[1:].split("/")
-    if not components or any(p in ("", ".", "..") or any(ord(c) < 32 for c in p) for p in components):
-        raise SafetyError("Unsafe virtual path")
-    if any(re.search(r'[<>:"|?*]', p) or p.endswith((".", " ")) for p in components):
-        raise SafetyError("Virtual path contains non-portable characters")
-    if any(re.match(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)", p, re.I) for p in components):
-        raise SafetyError("Reserved path component")
-    return "/" + "/".join(components)
+def safe_parts(path):
+    parts=path.split('/')
+    if not parts or any(not p or p in ('.','..') or p.endswith((' ','.')) or re.search(r'[<>:"\\|?*\x00-\x1f]',p) or re.match(r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)',p,re.I) for p in parts):
+        raise SafetyError('Unsafe STRM path')
+    return parts
 
+def recognize(path):
+    from app.chain.media import MediaChain
+    context=MediaChain().recognize_by_path(path=path,obtain_images=False)
+    info=getattr(context,'media_info',None)
+    kind=getattr(info,'type',None); kind=getattr(kind,'name',kind)
+    kind={'MOVIE':'电影','TV':'电视剧','电影':'电影','电视剧':'电视剧'}.get(kind,'未识别')
+    category=getattr(info,'category',None) or '未分类'
+    safe_parts(str(category))
+    if '/' in str(category): raise SafetyError('Invalid category')
+    return kind,str(category)
+
+def classify(prefix,relative,recognizer=recognize):
+    parts=safe_parts(relative)
+    context=[p for p in prefix.split('/') if p]+parts[:-1]
+    # An already organized source hierarchy is authoritative, including a selected
+    # root such as /电影/外语电影. Do not duplicate it after classification.
+    for i,p in enumerate(context):
+        if p in TYPES:
+            return '/'.join([TYPES[p],*context[i+1:],parts[-1]])
+    try: kind,category=recognizer('/'.join([prefix.rstrip('/'),relative]))
+    except Exception: kind,category='未识别','未分类'
+    return '/'.join([kind,category,*parts])
 
 class StrmManager:
-    def __init__(self, config, db):
-        self.config, self.db = config, db
-        self.root = Path(config.strm_dir).resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
+    def __init__(self,config):
+        self.config=config
+        self.root=Path(config.strm_dir).resolve()
+        self.root.mkdir(parents=True,exist_ok=True)
 
-    def target(self, media):
-        relative = PurePosixPath(virtual_path(media.virtual_path).lstrip("/"))
-        from .classification import folders
-        classified = folders(self.config, self.db, media)
-        # Retain original extension to avoid movie.mkv and movie.mp4 colliding.
-        target = self.root.joinpath(*classified, *relative.parts[:-1], relative.name + ".strm")
-        if not target.resolve().is_relative_to(self.root):
-            raise SafetyError("STRM path escaped output root")
-        return target
-
-    def generate(self, mid):
-        media = self.db.media(mid)
-        from .classification import folders
-        folders(self.config, self.db, media, refresh=True)
-        target = self.target(media)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if not target.parent.resolve().is_relative_to(self.root):
-            raise SafetyError("STRM parent escaped root")
-        content = self.config.playback_url(media.token) + "\n"
-        owner = self.db.one("SELECT id FROM media WHERE strm_path=? AND id<>?", (str(target), mid))
-        if owner:
-            raise SafetyError("STRM path already owned by another media object")
-        if target.exists() and target.read_text(encoding="utf-8") != content:
-            raise SafetyError("Refusing to overwrite an unowned/edited STRM")
-        temp = None
+    def generate(self,relative,token):
+        parts=safe_parts(relative)
+        target=self.root.joinpath(*parts[:-1],parts[-1]+'.strm')
+        if target.is_symlink() or not target.resolve().is_relative_to(self.root): raise SafetyError('Unsafe output target')
+        target.parent.mkdir(parents=True,exist_ok=True)
+        if not target.parent.resolve().is_relative_to(self.root): raise SafetyError('Unsafe output parent')
+        content=self.config.playback_url(token)+'\n'
+        if target.exists():
+            if target.read_text('utf-8')!=content: raise SafetyError('Existing STRM differs')
+            return str(target)
+        temp=None
         try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent, delete=False) as out:
-                temp = Path(out.name)
-                out.write(content)
-                out.flush()
-                os.fsync(out.fileno())
-            os.replace(temp, target)
-            self.db.execute("UPDATE media SET strm_path=? WHERE id=?", (str(target), mid))
-            self.db.metric("strm_generated")
-            self.db.log('strm_generate', 'DONE', mid, 'STRM written atomically')
+            with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',dir=target.parent,delete=False) as output:
+                temp=Path(output.name); output.write(content); output.flush(); os.fsync(output.fileno())
+            # Atomic create without overwriting a file created concurrently.
+            os.link(temp,target)
         finally:
-            if temp and temp.exists():
-                temp.unlink()
-        # Old paths are left intact until their content proves ownership.
-        if media.strm_path and Path(media.strm_path) != target:
-            old = Path(media.strm_path)
-            if old.resolve().is_relative_to(self.root) and old.is_file() and old.read_text(encoding="utf-8") == content:
-                old.unlink()
+            if temp and temp.exists(): temp.unlink()
         return str(target)
-
-    def verify(self, mid):
-        media = self.db.media(mid)
-        target = self.target(media)
-        return (media.strm_path == str(target) and target.is_file()
-                and target.read_text(encoding="utf-8") == self.config.playback_url(media.token) + "\n")
-
-    def repair(self, mid):
-        if self.verify(mid):
-            return self.db.media(mid).strm_path
-        return self.generate(mid)
-
-    def clean_broken(self, media_ids=None):
-        removed = []
-        allowed = None if media_ids is None else set(media_ids)
-        for row in self.db.all("""SELECT m.id FROM media m
-            JOIN missing_sources x ON x.media_id=m.id
-            JOIN normal_objects n ON n.media_id=m.id AND n.file_id=x.file_id
-            WHERE m.status='BROKEN' AND m.error='Source missing (scan confirmed)'
-            AND m.source_deleted=0 AND m.storage_type='NORMAL'
-            AND NOT EXISTS(SELECT 1 FROM share_objects s WHERE s.media_id=m.id)
-            AND NOT EXISTS(SELECT 1 FROM cache_objects c WHERE c.media_id=m.id)
-            AND NOT EXISTS(SELECT 1 FROM organize_plans p WHERE p.media_id=m.id AND p.state<>'DONE')"""):
-            media = self.db.media(row["id"])
-            if allowed is not None and media.id not in allowed:
-                continue
-            if self.verify(media.id):
-                Path(media.strm_path).unlink()
-                self.db.execute("UPDATE media SET strm_path=NULL WHERE id=?", (media.id,))
-                removed.append(media.id)
-        return removed

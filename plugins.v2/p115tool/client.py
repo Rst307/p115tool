@@ -4,7 +4,6 @@ import re
 import threading
 import time
 from urllib.parse import urlsplit
-from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 from .models import RemoteFile, DownloadLink, RemoteError, MissingFile, SafetyError
 
 
@@ -35,11 +34,6 @@ def normalize_file(data, parent="0", path=""):
                       str(original_parent),
                       str(data.get("pc", data.get("pick_code", data.get("pickcode", "")))),
                       path, is_dir)
-
-
-class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
 
 
 class P115ClientManager:
@@ -92,46 +86,6 @@ class P115ClientManager:
                 raise RemoteError(f"115 {method} failed ({type(exc).__name__})") from None
             finally:
                 self._last_request = time.monotonic()
-
-    def login_status(self):
-        result=self.call('login_status')
-        if type(result) is not bool:
-            raise RemoteError('Unsupported login status response')
-        return result
-
-    def refresh(self):
-        if not self.login_status():
-            raise RemoteError("115 authentication expired; replace cookie")
-
-    def account_capacity(self):
-        response = check_response(self.call('fs_index_info', {'count_space_nums':0}))
-        # Only recognize explicit byte counters. Never pass raw account/device
-        # payloads through, parse human units, or convert unknown fields to zero.
-        data = response.get('data', response)
-        if not isinstance(data,dict):
-            return None
-        space = data.get('space_info')
-        if not isinstance(space,dict):
-            return None
-        result = {}
-        for output, field in [('total_bytes','all_total'),('used_bytes','all_use'),('free_bytes','all_remain')]:
-            value = space.get(field)
-            if isinstance(value,dict):
-                value=value.get('size')
-            if type(value) is int:
-                number=value
-            elif isinstance(value,str) and re.fullmatch(r'[0-9]+',value):
-                if len(value)>19:
-                    return None
-                number=int(value)
-            else:
-                return None
-            if not 0 <= number <= 2**63-1:
-                return None
-            result[output]=number
-        if result['used_bytes']>result['total_bytes'] or result['free_bytes']>result['total_bytes']:
-            return None
-        return result
 
     def list_files(self, cid="0"):
         offset = 0
@@ -194,104 +148,3 @@ class P115ClientManager:
 
     def normal_link(self, pickcode, ua):
         return self._link(self.call("download_url", pickcode, user_agent=ua))
-
-    def share_link(self, share, ua):
-        payload = {"share_code": share["share_code"], "receive_code": share["receive_code"], "file_id": share["file_id"]}
-        return self._link(self.call("share_download_url", payload, headers={"User-Agent": ua}))
-
-    def create_share(self, fid):
-        ids = [str(value) for value in fid] if isinstance(fid, (list, tuple)) else [str(fid)]
-        if not ids or len(ids) > 1000 or any(not value.isdigit() for value in ids):
-            raise ValueError("Share creation requires 1..1000 numeric file IDs")
-        resp = check_response(self.call("share_send", {"file_ids": ",".join(ids)}))
-        data = resp.get("data", {})
-        code = data.get("share_code")
-        password = data.get("receive_code")
-        if not code or not password:
-            raise RemoteError("Share response is missing its code/password")
-        return str(code), str(password)
-
-    def ensure_share_retention(self, code):
-        # share_send does not document retention settings. Change it through
-        # updateshare ONLY after the caller has durably saved the returned code.
-        check_response(self.call('share_update', {'share_code':code,'share_duration':-1}))
-
-    def share_files(self, code, password, cid="0"):
-        offset = 0
-        seen = set()
-        while True:
-            resp = check_response(self.call("share_snap", {"share_code": code, "receive_code": password,
-                                                           "cid": cid, "offset": offset, "limit": 1000}))
-            data = resp.get("data", {})
-            rows = data.get("list")
-            if not isinstance(rows, list):
-                raise RemoteError("Malformed share snapshot")
-            for row in rows:
-                file = normalize_file(row, str(cid))
-                if file.file_id in seen:
-                    raise RemoteError("Share changed while paging")
-                seen.add(file.file_id)
-                yield file
-            offset += len(rows)
-            if offset >= int(data.get("count", offset)):
-                break
-            if not rows:
-                raise RemoteError("Incomplete share pagination")
-
-    def find_share_file(self, code, password, expected):
-        stack, visited, matches = ["0"], set(), []
-        while stack:
-            cid = stack.pop()
-            if cid in visited or len(visited) > 10000:
-                raise RemoteError("Share directory cycle or traversal limit")
-            visited.add(cid)
-            for file in self.share_files(code, password, cid):
-                if file.is_dir:
-                    stack.append(file.file_id)
-                elif expected.matches(file):
-                    matches.append(file)
-        if len(matches) != 1:
-            raise SafetyError("Share must contain exactly one matching name/size/SHA1 file")
-        return matches[0]
-
-    def make_cache_folder(self, parent, name):
-        return self.make_directory(parent,name)
-
-    def make_directory(self, parent, name):
-        resp = check_response(self.call("fs_mkdir", name, pid=parent))
-        cid = resp.get("cid", resp.get("data", {}).get("cid"))
-        if not cid:
-            raise RemoteError("Missing cache folder ID")
-        return str(cid)
-
-    def restore(self, share, cid):
-        check_response(self.call("share_receive", {"share_code": share["share_code"], "receive_code": share["receive_code"], "file_id": share["file_id"], "cid": cid}))
-
-    def delete(self, fid):
-        check_response(self.call("fs_delete", str(fid)))
-
-    def move(self, fid, parent):
-        # fs_move otherwise defaults to irreversible replacement on collisions.
-        import json
-        check_response(self.call("fs_move", {"fid": str(fid), "pid": parent,
-            "conflict_policy": json.dumps({str(fid): {"action": "keep_both"}})}))
-
-    def rename(self, fid, name):
-        check_response(self.call("fs_rename", (str(fid), name)))
-
-    def probe_range(self, link, ua, size):
-        self.validate_url(link.url)
-        # Disable environment proxies and redirects; request exactly one byte,
-        # read at most two bytes even if the remote server ignores Range.
-        req = Request(link.url, headers={"User-Agent": ua, "Range": "bytes=0-0", "Accept-Encoding": "identity"})
-        opener = build_opener(NoRedirect(), ProxyHandler({}))
-        try:
-            with opener.open(req, timeout=self.config.request_timeout) as response:
-                if response.status != 206 or response.headers.get("Content-Range") != f"bytes 0-0/{size}":
-                    raise SafetyError("Share did not pass the bounded Range check")
-                if len(response.read(2)) != 1:
-                    raise SafetyError("Share Range length mismatch")
-        except SafetyError:
-            raise
-        except Exception:
-            raise RemoteError("Share Range request failed") from None

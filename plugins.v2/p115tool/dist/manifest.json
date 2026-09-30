@@ -1,19 +1,20 @@
 {
   "files": {
-    "__federation_expose_Config-Cr5wrKIZ.js": "9dcfdcdb9ee07a9465fb22723021414ea9e8c4af324a367a4a0b94e9fd7cad1a",
-    "__federation_expose_Page-FrqoUpXM.css": "2891891b3bdb252d4ef11c626feeb2ee19c1fb0c534a66261ee50858eb673c81",
-    "__federation_expose_Page-ph1ibq6s.js": "7f4843d6d7b34acb37825584529b1a9430d1e9c801b6ead3c4ff157aa20c051f",
+    "__federation_expose_Config-DRmMjHeW.js": "e8ddce21ca26c30661d6ed5ce2fc442f61a9804beb37e0bd74692dca723179ba",
+    "__federation_expose_Config-IzFf8uar.css": "ae5f16cb537f54e480391b0122f781c36c3e63e86aac1bce9cf5579e3b77df0a",
+    "__federation_expose_Page-CMOGhVxC.js": "65343b862cfafdb1d677e1efcdb9ac596dc98f18a0834969c3b63516946983b4",
+    "__federation_expose_Page-CNm9BWDs.css": "bf78938c72f98d2b988dc1d8b6f963f562209fd2b667dae61c61f7a4399069ca",
     "__federation_fn_import-E6wRZccp.js": "11a2d68813601dffb4a4bb619cabf25526a7a445b054e418100e24128f6bdca2",
-    "host-BftUK10E.js": "31ccda553e148a283bcdb63abd46caff1f3da704aa3eef74495f8be482914f97",
-    "remoteEntry.js": "69e5adbfdc5a1e676e9aa6685ff5457a15aae076b636865a33fb112ae290ba5b"
+    "_plugin-vue_export-helper-DLxUpd2V.js": "a1c542b387e7f1a74d8b27060f5b735a15d582aa34d9e5f07b3962e71becce7b",
+    "remoteEntry.js": "e285fd469517433ed93d6bf96b85b57b30aad2913a961749da22018a35463f23"
   },
   "sources": {
     "frontend/package-lock.json": "9fccb33dde7435c7fbd73b4a33f3b004c580ded3c57dd7fd4b9ac9cbe44bbb90",
     "frontend/vite.config.js": "8466c6e1a41893b25501139906a86a8d932bd5d51cccc102782a58b8a6c5f3a0",
-    "frontend/src/config-schema.json": "f3350ac015ac26a0bd12788cf951f7dd869b79b8b3780d91cd8ad550c54b4665",
-    "frontend/src/Config.vue": "28ea9903352a3787d31b183472d4889e3b78a2a473f42e5d9bab4a3643626641",
+    "frontend/src/config-schema.json": "a5338d955b09046ec0b16f3a9625b7955c763aae07dc722e474e6078745f932f",
+    "frontend/src/Config.vue": "3ba94ac3ee41eb8a5387616ced25d38d43a48edf39f7ecec3e99e5239c968a38",
     "frontend/src/host.js": "1b6b3ba9b35180c0b7338c1c464a9fadcaab6259e1a2e47139e2394ef9b60fb6",
     "frontend/src/main.js": "60929e90fdb9d5090b51b772a517645b8da18e347a2f0362de34be7bc7fae3a1",
-    "frontend/src/Page.vue": "a960d2fb250b52cdd3b2b1014990cae6c883d43fb3a42004c218ecad2e01be24"
+    "frontend/src/Page.vue": "ad0b748fcc1ee6e99da25364aae0d30afffc4b9aaba1e2dca417c0712720079d"
   }
 }
