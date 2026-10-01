@@ -10,9 +10,12 @@ from .models import RemoteFile, DownloadLink, RemoteError, MissingFile, SafetyEr
 def check_response(response):
     if not isinstance(response, dict) or response.get("state") not in (True, 1):
         # Never include upstream messages/payloads: they can contain cookies or URLs.
-        if isinstance(response, dict) and response.get("errno") in (20018, 50003, 90008):
-            raise MissingFile("Remote file no longer exists")
-        raise RemoteError("115 request failed or returned an unrecognized response")
+        code=response.get('errno') if isinstance(response,dict) else None
+        code=code if type(code) is int else None
+        error=(MissingFile("Remote file no longer exists") if code in (20013, 20018, 50003, 90008)
+               else RemoteError("115 request failed or returned an unrecognized response"))
+        error.upstream_code=code
+        raise error
     return response
 
 

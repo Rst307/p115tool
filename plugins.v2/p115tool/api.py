@@ -3,6 +3,17 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response
 from .models import MissingFile, ToolError
 import re
+try:
+    from app.log import logger
+except ModuleNotFoundError:
+    import logging
+    logger=logging.getLogger(__name__)
+
+def log_failure(exc):
+    code=getattr(exc,'upstream_code',None)
+    code=code if type(code) is int else None
+    # Never log the request, token, URL, or exception text/upstream payload.
+    logger.warning(f'115播放失败：类型={type(exc).__name__}，上游错误码={code}')
 
 def routes(plugin):
     async def play(request: Request):
@@ -15,7 +26,11 @@ def routes(plugin):
                 if not plugin._service: raise ToolError('Service unavailable')
                 return plugin._service.play(token,ua)
         try: location=await run_in_threadpool(resolve)
-        except MissingFile: raise HTTPException(404,'Playback unavailable') from None
-        except Exception: raise HTTPException(503,'Playback unavailable') from None
+        except MissingFile as exc:
+            log_failure(exc)
+            raise HTTPException(404,'Playback unavailable') from None
+        except Exception as exc:
+            log_failure(exc)
+            raise HTTPException(503,'Playback unavailable') from None
         return Response(status_code=302,headers={'Location':location,'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})
     return [{'path':'/play/{token}','endpoint':play,'methods':['GET','HEAD'],'summary':'115 direct playback','allow_anonymous':True}]
