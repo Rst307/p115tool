@@ -1,9 +1,9 @@
 {
   "files": {
-    "__federation_expose_Config-BF9tOSD1.js": "4c647254b90d32e7d9bb09110082498c83d38cf11d46e10027daa1eb7f757a02",
-    "__federation_expose_Page-ClZWKGdQ.js": "c0c0e696379163c394a67e793ba6c654fd6c51505f25b3ec163f6d28304458c2",
+    "__federation_expose_Config-CYB01f0J.js": "c0fce29caa0f256d40de22c934aac32664188bd179ad1efe4128ede9a6bed2a8",
+    "__federation_expose_Page-adYdIYI2.js": "76d7d7b4890afaacc13efd3099c021e024ffe908af60e603638c386f173357fc",
     "__federation_fn_import-E6wRZccp.js": "11a2d68813601dffb4a4bb619cabf25526a7a445b054e418100e24128f6bdca2",
-    "remoteEntry.js": "63c8b3bef9177c4d0fef4c51c462715819f8eb15d89961a5bac37dee74bea350",
+    "remoteEntry.js": "9f6a34c1c5c13a1b2c587862eac7155217d45c60c83d093599a4e74c37370905",
     "ui-8x_RroF5.js": "553c8d123629b6b0973f04aad53ed63c24dca9e6d54f90a8d72d39d349903fb3",
     "ui-8ywdPfsL.css": "2ef95b8b815c42df3917d25905df1d3adeb130053ee97be788d2c60f59650136"
   },
@@ -11,11 +11,11 @@
     "frontend/package-lock.json": "9fccb33dde7435c7fbd73b4a33f3b004c580ded3c57dd7fd4b9ac9cbe44bbb90",
     "frontend/vite.config.js": "8466c6e1a41893b25501139906a86a8d932bd5d51cccc102782a58b8a6c5f3a0",
     "frontend/src/config-schema.json": "a5338d955b09046ec0b16f3a9625b7955c763aae07dc722e474e6078745f932f",
-    "frontend/src/Config.vue": "bc43eaa1784cabbaa8e056225af640b7ce4e400bec8586fdcb13cd430a197b9c",
+    "frontend/src/Config.vue": "98c07f28f031eac605345244ced2d837941bfb4ea3d17b947cd7603b9266def9",
     "frontend/src/host.js": "1b6b3ba9b35180c0b7338c1c464a9fadcaab6259e1a2e47139e2394ef9b60fb6",
     "frontend/src/main.js": "60929e90fdb9d5090b51b772a517645b8da18e347a2f0362de34be7bc7fae3a1",
     "frontend/src/navigation.js": "b2a8f9d5d2cf5ea3bc6d40dc14a9886643e1a412cdc644ff9cc643a84c6a3bd4",
-    "frontend/src/Page.vue": "4262cc293a80f68a36e339b88a47fedd09a4a5289526fe2e0f38f78e546ab03a",
+    "frontend/src/Page.vue": "be9fd3791a8cb17df7ab4fdb4692e498e423c24809f9767a49e845110d6b7f2a",
     "frontend/src/storage.js": "271c8c331dcd54a00724bb27cfeea7dbd4fb16ee4b21dce7c66ed77f543bf9bd",
     "frontend/src/Storage.vue": "f93eedf8e61163109c011b3b4b6dd5184bdc9cace85d9a4f0ce8f23342c11d9f",
     "frontend/src/ui.css": "149d6317202234286588b8c32c28c346f84dcbbecb5855823060be4ebc11a342"

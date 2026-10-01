@@ -14,6 +14,7 @@ class Config:
     playback_prefix: str = '/api/v1/plugin/P115Tool'
     source_cids: list = field(default_factory=list)
     organize_cids: list = field(default_factory=list)
+    organize_target_cid: str = ''
     scheduled: bool = False
     organize_scheduled: bool = False
     organize_time: str = '02:00'
@@ -43,6 +44,8 @@ class Config:
             if type(v) is not int or not 5<=v<=120: raise ValueError('Invalid timeout')
             data['request_timeout']=v
         cfg=cls(**data)
+        if not isinstance(cfg.organize_target_cid,str) or (cfg.organize_target_cid and not re.fullmatch(r'[1-9][0-9]{0,19}',cfg.organize_target_cid)):
+            raise ValueError('Invalid organize target')
         if not isinstance(cfg.recycle_password,str) or (cfg.recycle_password and not re.fullmatch(r'[0-9]{6}',cfg.recycle_password)):
             raise ValueError('Invalid recycle security key')
         if not isinstance(cfg.temp_cid,str) or (cfg.temp_cid and not re.fullmatch(r'[1-9][0-9]{0,19}',cfg.temp_cid)):
