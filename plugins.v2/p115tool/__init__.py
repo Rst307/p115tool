@@ -7,9 +7,13 @@ from .service import Service
 try:
     from app.plugins import _PluginBase
     from app.log import logger
+    from app.core.event import eventmanager
+    from app.schemas.types import EventType
 except ModuleNotFoundError as exc:
     if exc.name!='app': raise
     logger=logging.getLogger('p115tool')
+    eventmanager=type('OfflineEvents',(),{'register':staticmethod(lambda event: lambda fn: fn)})()
+    EventType=type('OfflineEventType',(),{'TransferComplete':'TransferComplete'})
     class _PluginBase:
         def update_config(self,config): self._saved_config=config
         def get_data_path(self): return Path('./data/p115tool')
@@ -18,7 +22,7 @@ class P115Tool(_PluginBase):
     plugin_name='115 工具箱'
     plugin_desc='递归生成分类STRM，115个人网盘302直链播放'
     plugin_icon='https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png'
-    plugin_version='0.2.7'
+    plugin_version='0.2.8'
     plugin_author='Rst307'
     author_url='https://github.com/Rst307'
     plugin_config_prefix='p115tool_'
@@ -75,6 +79,22 @@ class P115Tool(_PluginBase):
             if self._service:
                 try: return self._service.start()
                 except Exception: logger.warning('115 STRM任务未启动，请检查源目录配置。')
+    @eventmanager.register(EventType.TransferComplete)
+    def on_transfer_complete(self,event):
+        # Never retain or log host payloads: they may contain private URLs.
+        with self._lifecycle:
+            if not self._service or not self._config.auto_after_transfer: return
+            try:
+                data=getattr(event,'event_data',None)
+                if not isinstance(data,dict): return
+                info=data.get('transferinfo')
+                value=lambda obj,key: obj.get(key) if isinstance(obj,dict) else getattr(obj,key,None)
+                if value(info,'success') is not True: return
+                target=value(info,'target_item') or value(info,'target_diritem')
+                if value(target,'storage')!='u115': return
+                self._service.request_auto_generate()
+            except Exception:
+                logger.warning('115整理后自动生成未启动，请检查STRM源目录配置。')
     def stop_service(self):
         with self._lifecycle:
             if self._service: self._service.close(); self._service=None

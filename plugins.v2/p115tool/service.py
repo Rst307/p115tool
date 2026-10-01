@@ -6,6 +6,7 @@ import secrets
 import sqlite3
 import threading
 import hashlib
+import logging
 from urllib.parse import urlsplit
 from .client import P115ClientManager
 from .models import SafetyError, MissingFile, ToolError
@@ -17,6 +18,7 @@ class Service:
         self.client=client or P115ClientManager(config)
         self._lock=threading.RLock(); self._stop=threading.Event(); self._worker=None
         self._closed=False; self.recognizer=recognizer
+        self._auto_timer=None; self._auto_revision=0; self._rerun=False
         directory=Path(config.data_dir); directory.mkdir(parents=True,exist_ok=True)
         self.path=directory/'media.sqlite3'
         self._file_lock=open(directory/'strm-service.lock','a+b')
@@ -75,15 +77,44 @@ class Service:
         with self._lock:
             return {**self._state(),'count':self.query('SELECT count(*) count FROM strm_files',one=True)['count']}
 
-    def start(self):
+    def start(self,rerun=False):
         with self._lock:
             if self._closed: raise ToolError('Service stopped')
-            if self._worker and self._worker.is_alive(): return self.snapshot()
+            if self._worker and self._worker.is_alive():
+                if rerun: self._rerun=True
+                return self.snapshot()
             if not self.config.source_cids: raise ValueError('Configure source folders')
             self._save_state({'state':'RUNNING','found':0,'generated':0,'failed':0,'error':None})
-            self._worker=threading.Thread(target=self.generate_all,name='p115tool-strm',daemon=True)
+            self._worker=threading.Thread(target=self._generate_pending,name='p115tool-strm',daemon=True)
             self._worker.start()
             return self.snapshot()
+
+    def request_auto_generate(self):
+        with self._lock:
+            if self._closed or not self.config.auto_after_transfer or not self.config.source_cids: return
+            self._auto_revision+=1
+            revision=self._auto_revision
+            if self._auto_timer: self._auto_timer.cancel()
+            self._auto_timer=threading.Timer(10,self._auto_generate,args=(revision,))
+            self._auto_timer.daemon=True
+            self._auto_timer.start()
+
+    def _auto_generate(self,revision):
+        with self._lock:
+            if self._closed or revision!=self._auto_revision: return
+            self._auto_timer=None
+            try: self.start(rerun=True)
+            except Exception:
+                logging.getLogger('p115tool').warning('115整理后自动生成未启动，请检查STRM配置和数据目录。')
+
+    def _generate_pending(self):
+        while True:
+            self.generate_all()
+            with self._lock:
+                if self._closed or not self._rerun:
+                    self._worker=None
+                    return
+                self._rerun=False
 
     def generate_all(self):
         state={'state':'RUNNING','found':0,'generated':0,'failed':0,'error':None}
@@ -228,7 +259,10 @@ class Service:
             return link.url
 
     def close(self):
-        with self._lock: self._closed=True; self._stop.set(); worker=self._worker
+        with self._lock:
+            self._closed=True; self._stop.set(); worker=self._worker
+            self._auto_revision+=1; self._rerun=False
+            if self._auto_timer: self._auto_timer.cancel(); self._auto_timer=None
         if worker and worker is not threading.current_thread(): worker.join()
         with self._lock:
             self.client.close(); self._file_lock.close()

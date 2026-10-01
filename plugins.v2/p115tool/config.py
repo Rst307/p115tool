@@ -15,6 +15,7 @@ class Config:
     source_cids: list = field(default_factory=list)
     organize_cids: list = field(default_factory=list)
     scheduled: bool = False
+    auto_after_transfer: bool = False
     scan_time: str = '03:00'
     request_timeout: int = 30
     allowed_cdn_suffixes: list = field(default_factory=lambda: ['115.com','115cdn.com','115cdn.net','115cdn.cn'])
@@ -27,7 +28,7 @@ class Config:
         if 'source_cids_json' in data:
             data['source_cids'] = json.loads(data.pop('source_cids_json'))
         data = {k:v for k,v in data.items() if k in {f.name for f in fields(cls)}}
-        for k in ('enabled','scheduled'):
+        for k in ('enabled','scheduled','auto_after_transfer'):
             if k in data and type(data[k]) is not bool: raise ValueError('Invalid boolean')
         if 'request_timeout' in data:
             v=data['request_timeout']
