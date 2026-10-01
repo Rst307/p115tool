@@ -6,12 +6,19 @@ import time
 from urllib.parse import urlsplit
 from .models import RemoteFile, DownloadLink, RemoteError, MissingFile, SafetyError
 
+def response_code(response):
+    if not isinstance(response,dict): return None
+    for key in ('errno','errNo','errcode','errCode','code','msg_code'):
+        value=response.get(key)
+        if type(value) is int: return value
+        if isinstance(value,str) and re.fullmatch(r'[0-9]{1,9}',value): return int(value)
+    return None
+
 
 def check_response(response):
     if not isinstance(response, dict) or response.get("state") not in (True, 1):
         # Never include upstream messages/payloads: they can contain cookies or URLs.
-        code=response.get('errno') if isinstance(response,dict) else None
-        code=code if type(code) is int else None
+        code=response_code(response)
         error=(MissingFile("Remote file no longer exists") if code in (20013, 20018, 50003, 90008)
                else RemoteError("115 request failed or returned an unrecognized response"))
         error.upstream_code=code
@@ -81,12 +88,21 @@ class P115ClientManager:
             if wait > 0:
                 time.sleep(wait)
             try:
-                return getattr(self._client(), method)(*args, timeout=self.config.request_timeout, **kwargs)
-            except MissingFile:
+                result=getattr(self._client(), method)(*args, timeout=self.config.request_timeout, **kwargs)
+                if isinstance(result,dict) and result.get('state') in (False,0): check_response(result)
+                return result
+            except RemoteError as exc:
+                exc.operation=method
                 raise
             except Exception as exc:
                 # SDK exceptions may embed cookie-bearing request representations.
-                raise RemoteError(f"115 {method} failed ({type(exc).__name__})") from None
+                code=next((code for arg in exc.args if (code:=response_code(arg)) is not None),None)
+                # Only a typed SDK absence on a read is proof that a copy disappeared.
+                missing=(method in ('fs_file','fs_files') and isinstance(exc,FileNotFoundError)
+                         and type(exc).__module__=='p115client.exception')
+                error=(MissingFile('Remote file no longer exists') if missing else RemoteError('115 SDK request failed'))
+                error.operation=method;error.upstream_code=code;error.sdk_error=type(exc).__name__
+                raise error from None
             finally:
                 self._last_request = time.monotonic()
 

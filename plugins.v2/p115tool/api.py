@@ -12,8 +12,13 @@ except ModuleNotFoundError:
 def log_failure(exc):
     code=getattr(exc,'upstream_code',None)
     code=code if type(code) is int else None
+    operation=getattr(exc,'operation','unknown')
+    allowed={'fs_file','fs_files','fs_mkdir','share_snap','share_receive','download_url','share_download_url','share_send','share_update','fs_delete'}
+    operation=operation if isinstance(operation,str) and operation in allowed else 'unknown'
+    sdk_error=getattr(exc,'sdk_error','none')
+    sdk_error=sdk_error if isinstance(sdk_error,str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,80}',sdk_error) else 'unknown'
     # Never log the request, token, URL, or exception text/upstream payload.
-    logger.warning(f'115播放失败：类型={type(exc).__name__}，上游错误码={code}')
+    logger.warning(f'115播放失败：接口={operation}，类型={type(exc).__name__}，SDK异常={sdk_error}，上游错误码={code}')
 
 def routes(plugin):
     async def play(request: Request):
