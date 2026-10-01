@@ -290,6 +290,8 @@ class Service:
             self._closed=True; self._stop.set(); worker=self._worker
             self._auto_revision+=1; self._rerun=False
             if self._auto_timer: self._auto_timer.cancel(); self._auto_timer=None
+        from .iso_transfer import unregister
+        unregister(self)
         if worker and worker is not threading.current_thread(): worker.join()
         self.storage.close()
         with self._lock:

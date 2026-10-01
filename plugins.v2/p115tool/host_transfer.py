@@ -74,6 +74,11 @@ def organize(service, cids):
              if not any(other != cid and path != parent
                         and (parent == '/' or path.startswith(parent + '/'))
                         for other, parent, _ in items)]
+    try:
+        from .iso_transfer import register
+        register(service, [sources[cid] for cid, _, _ in roots], target)
+    except Exception:
+        return {'items': [], 'state': 'UNAVAILABLE'}
     results = []
     for cid, _, item in roots:
         try:
