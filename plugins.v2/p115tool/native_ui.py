@@ -35,6 +35,7 @@ def dispatch(plugin,route,payload):
         service=plugin._service
         if not service: raise ToolError('Service unavailable')
         if route=='action' and payload=={'action':'generate'}: return service.start()
+        if route=='action' and payload=={'action':'scan_storage'}: return service.storage.start('scan')
         if route=='action' and set(payload)=={'action','link','password'} and payload['action']=='import_share':
             return service.storage.start('import',{'link':payload['link'],'password':payload['password']})
         if route=='action' and set(payload)=={'action','ids','delete_source'} and payload['action']=='virtualize':

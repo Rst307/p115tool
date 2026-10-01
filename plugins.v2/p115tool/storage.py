@@ -62,6 +62,10 @@ class StorageManager:
                 stage TEXT NOT NULL,received_at REAL NOT NULL DEFAULT 0,
                 lease_until REAL NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS resource_job (id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);''')
+            db.executescript('''CREATE TABLE IF NOT EXISTS actual_inventory (
+                media_id TEXT PRIMARY KEY,path TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS actual_inventory_state (
+                id INTEGER PRIMARY KEY CHECK(id=1),scope TEXT NOT NULL,scanned_at REAL NOT NULL);''')
             for before,after in [('SHARE_CREATING','SHARE_CREATE_UNKNOWN'),('SOURCE_DELETING','SOURCE_DELETE_UNKNOWN')]:
                 db.execute('UPDATE resource_storage SET stage=? WHERE stage=?',(after,before))
             for before,after in [('FOLDER_CREATING','FOLDER_UNKNOWN'),('RECEIVING','RECEIVE_UNKNOWN'),('DELETING','DELETE_UNKNOWN')]:
@@ -90,18 +94,67 @@ class StorageManager:
     def listing(self, page=1, kind='ALL', search=''):
         if type(page) is not int or not 1<=page<=100000 or kind not in ('ALL','ACTUAL','VIRTUAL') or not isinstance(search,str) or len(search)>100:
             raise ValueError('Invalid storage filter')
-        where="WHERE (?='ALL' OR coalesce(s.kind,'ACTUAL')=?) AND instr(lower(f.relative_path),lower(?))>0"
-        args=(kind,kind,search)
-        total=self.service.query('SELECT count(*) n FROM strm_files f LEFT JOIN resource_storage s ON s.media_id=f.file_id '+where,args,one=True)['n']
-        items=self.service.query("SELECT f.file_id id,f.name,f.relative_path path,coalesce(s.kind,'ACTUAL') kind,"
+        snapshot=self.service.query('SELECT * FROM actual_inventory_state WHERE id=1',one=True)
+        current=bool(snapshot and snapshot['scope']==self.inventory_scope())
+        path="CASE WHEN s.kind='VIRTUAL' THEN f.relative_path ELSE a.path END"
+        where="WHERE (s.kind='VIRTUAL' OR (? AND a.media_id IS NOT NULL)) AND (?='ALL' OR coalesce(s.kind,'ACTUAL')=?) AND instr(lower("+path+"),lower(?))>0"
+        args=(current,kind,kind,search)
+        joins=' FROM strm_files f LEFT JOIN resource_storage s ON s.media_id=f.file_id LEFT JOIN actual_inventory a ON a.media_id=f.file_id '
+        total=self.service.query('SELECT count(*) n'+joins+where,args,one=True)['n']
+        items=self.service.query("SELECT f.file_id id,f.name,"+path+" path,coalesce(s.kind,'ACTUAL') kind,"
             "coalesce(s.stage,'READY') stage,c.stage copy_state,c.received_at,c.lease_until FROM strm_files f "
-            'LEFT JOIN resource_storage s ON s.media_id=f.file_id LEFT JOIN resource_copies c ON c.media_id=f.file_id '
+            'LEFT JOIN resource_storage s ON s.media_id=f.file_id LEFT JOIN actual_inventory a ON a.media_id=f.file_id LEFT JOIN resource_copies c ON c.media_id=f.file_id '
             +where+' ORDER BY f.relative_path,f.file_id LIMIT 50 OFFSET ?',(*args,(page-1)*50))
         for item in items:
             item['expires_at']=(item.pop('received_at') or 0)+self.config.temp_days*86400 if item['copy_state']=='READY' else None
         return {'items':items,'total':total,'page':page,'job':self.job(),'busy':self.busy,
                 'temp_days':self.config.temp_days,'cleanup_enabled':self.config.temp_cleanup,
-                'temp_configured':bool(self.config.temp_cid)}
+                'temp_configured':bool(self.config.temp_cid),'sources_configured':bool(self.config.source_cids),
+                'scanned_at':snapshot['scanned_at'] if current else None}
+
+    def inventory_scope(self):
+        return json.dumps([sorted(s['cid'] for s in self.config.source_cids),self.config.temp_cid])
+
+    def scan_actual(self, job):
+        # Enumerate everything before replacing the last successful snapshot.
+        files=[]; seen_dirs=set(); seen_files=set()
+        for source in self.config.source_cids:
+            if self.skip_directory(source['cid']): continue
+            prefix=self.client.directory_path(source['cid'])
+            stack=[(source['cid'],'')]
+            while stack:
+                cid,relative=stack.pop()
+                if self.service._stop.is_set(): raise InterruptedError()
+                if cid in seen_dirs: continue
+                if len(seen_dirs)>=100000: raise SafetyError('Traversal limit')
+                seen_dirs.add(cid)
+                for file in self.client.list_files(cid):
+                    if self.service._stop.is_set(): raise InterruptedError()
+                    if file.parent_id!=cid: raise SafetyError('Unexpected parent')
+                    safe_parts(file.name)
+                    if '/' in file.name: raise SafetyError('Unexpected filename')
+                    relative_path='/'.join(filter(None,[relative,file.name]))
+                    if file.is_dir:
+                        if not self.skip_directory(file.file_id): stack.append((file.file_id,relative_path))
+                        continue
+                    if self.skip_file(file.file_id) or file.file_id in seen_files or Path(file.name).suffix.lower() not in self.config.media_extensions: continue
+                    seen_files.add(file.file_id)
+                    files.append((file,prefix.rstrip('/')+'/'+relative_path))
+        # Preserve existing playback identities and STRM paths, including checkpoints.
+        for file,path in files:
+            if self.service._stop.is_set(): raise InterruptedError()
+            previous=self.service.query('SELECT relative_path FROM strm_files WHERE file_id=?',(file.file_id,),one=True)
+            destination=previous['relative_path'] if previous else classify('/',path.lstrip('/'),
+                **({'recognizer':self.service.recognizer} if self.service.recognizer else {}))
+            self.service.register(file,destination)
+        with self.service._lock:
+            if self.service._stop.is_set(): raise InterruptedError()
+            with closing(sqlite3.connect(self.service.path)) as db,db:
+                db.execute('DELETE FROM actual_inventory')
+                db.executemany('INSERT INTO actual_inventory VALUES(?,?)',[(f.file_id,p) for f,p in files])
+                db.execute('INSERT INTO actual_inventory_state VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET scope=excluded.scope,scanned_at=excluded.scanned_at',
+                    (self.inventory_scope(),time.time()))
+        job['done']=len(files)
 
     def _selection(self, ids):
         if (not isinstance(ids,list) or not ids or len(ids)>100
@@ -125,6 +178,10 @@ class StorageManager:
         elif action=='reconcile':
             if set(payload)!={'ids'}: raise ValueError('Invalid reconciliation')
             args=(self._selection(payload['ids']),)
+        elif action=='scan':
+            if payload: raise ValueError('Invalid scan')
+            if not self.config.source_cids: return {'state':'SOURCES_REQUIRED'}
+            args=()
         elif action=='cleanup':
             if payload: raise ValueError('Invalid cleanup')
             args=()
@@ -145,6 +202,7 @@ class StorageManager:
         job={'state':'RUNNING','action':action,'done':0,'failed':0,'error':None}
         try:
             if action=='import': self.import_share(*args,job=job)
+            elif action=='scan': self.scan_actual(job)
             elif action=='cleanup': self.cleanup(job)
             else:
                 for media_id in args[0]:

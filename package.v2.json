@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "实际与虚拟存储、分享临时转存、分类STRM及302播放",
     "labels": "115,STRM,媒体管理",
-    "version": "0.2.16",
+    "version": "0.2.17",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.2.17": "实际存储直接扫描整理后的媒体库，无需先生成STRM；打开页面自动扫描、完整快照更新与失败保留，排除临时副本，保留播放映射与检查点",
       "v0.2.16": "修复现场fs_file返回800001目录不存在时虚拟资源无法恢复；补齐缺失码识别，确认临时子目录丢失后重建转存，保留根目录和未知写结果保护",
       "v0.2.15": "兼容115错误码code等字段与SDK直接抛出的文件缺失异常；仅读取缺失触发恢复，写结果未知不重试；播放诊断增加失败接口和SDK异常类型",
       "v0.2.14": "补齐115文件夹已删除错误码20013识别，使虚拟资源能进入目录重建；新增仅含错误类型和数字错误码的脱敏播放日志",
