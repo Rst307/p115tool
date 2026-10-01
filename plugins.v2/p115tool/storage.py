@@ -439,8 +439,10 @@ class StorageManager:
             if any(row['rid']==rid for row in self.client.recycle_entries()):
                 raise SafetyError('Recycle purge outcome unconfirmed')
             self.service.query("UPDATE recycle_purge_intents SET stage='DONE' WHERE id=?",(intent,))
-        except Exception:
+        except Exception as exc:
             self.service.query("UPDATE recycle_purge_intents SET stage='UNKNOWN' WHERE id=?",(intent,))
+            from .api import log_failure
+            log_failure(exc,context='recycle')
             raise ToolError('Recycle purge needs attention; batch stopped') from None
 
     def validate_folder(self, copy):
@@ -492,7 +494,7 @@ class StorageManager:
             row=self.row(media_id)
             if not row or not row['share_fid']: raise SafetyError('Share mapping unavailable')
             copy=self.copy(media_id)
-            if copy and copy['stage']=='RECEIVE_UNKNOWN':
+            if copy and copy['stage'] in ('RECEIVE_UNKNOWN','RECEIVED'):
                 # Prefer a late successful receive. Only a verified empty or
                 # missing old directory permits an isolated new attempt.
                 try:
@@ -500,6 +502,8 @@ class StorageManager:
                     except MissingFile: files=[]
                     else: files=list(self.client.list_files(copy['folder_cid']))
                     if not files:
+                        if copy['stage']=='RECEIVED' and time.time()-copy['received_at']<RECEIVE_RECOVERY_COOLDOWN:
+                            raise SafetyError('Temporary transfer awaiting visibility')
                         if not recover_unknown: raise SafetyError('Temporary write outcome unresolved')
                         recent=self.service.query('SELECT max(abandoned_at) at FROM abandoned_resource_copies WHERE media_id=?',(media_id,),one=True)
                         if recent['at'] is not None and time.time()-recent['at']<RECEIVE_RECOVERY_COOLDOWN:
@@ -515,14 +519,20 @@ class StorageManager:
                         if self.service._stop.is_set(): raise InterruptedError()
                         self.create_copy_folder(media_id,copy['root_cid'],abandoned=copy)
                     else:
-                        if len(files)!=1 or not matches(files[0],row,copy['folder_cid']) or not files[0].pickcode:
+                        if len(files)!=1:
                             raise SafetyError('Temporary contents not uniquely verified')
+                        if not matches(files[0],row,copy['folder_cid']):
+                            raise SafetyError('Temporary identity changed')
                         candidate=files[0]
                         actual=self.client.stat(candidate.file_id)
-                        if actual.file_id!=candidate.file_id or not matches(actual,row,copy['folder_cid']) or not actual.pickcode:
+                        if actual.file_id!=candidate.file_id or not matches(actual,row,copy['folder_cid']):
                             raise SafetyError('Temporary identity changed')
+                        if not actual.pickcode: raise SafetyError('Temporary playback code unavailable')
                 except Exception as exc:
                     if self.service._stop.is_set(): raise InterruptedError() from None
+                    if copy['stage']=='RECEIVED':
+                        if isinstance(exc,ToolError): exc.copy_state=self.copy(media_id)['stage']
+                        raise
                     error=SafetyError('Temporary recovery cooling down' if exc.args==('Temporary recovery cooling down',)
                                       else 'Temporary write outcome unresolved')
                     error.copy_state=self.copy(media_id)['stage']
@@ -559,10 +569,6 @@ class StorageManager:
                 error=SafetyError('Temporary write outcome unresolved')
                 error.copy_state=copy['stage']
                 raise error
-            if copy and copy['stage']=='RECEIVED':
-                actual=self.locate_copy(row,copy)
-                self.service.query("UPDATE resource_copies SET file_id=?,stage='READY',received_at=? WHERE media_id=?",(actual.file_id,time.time(),media_id))
-                return actual
             if not copy:
                 copy=self.create_copy_folder(media_id,self.config.temp_cid)
             try: self.validate_folder(copy)
@@ -586,7 +592,7 @@ class StorageManager:
                 for key in ('operation','sdk_error','upstream_code'):
                     if hasattr(exc,key):setattr(error,key,getattr(exc,key))
                 raise error from None
-            self.service.query("UPDATE resource_copies SET stage='RECEIVED' WHERE media_id=?",(media_id,))
+            self.service.query("UPDATE resource_copies SET stage='RECEIVED',received_at=? WHERE media_id=?",(time.time(),media_id))
             return self.ensure_copy(media_id,recover_unknown=False)
 
     def play(self, media_id, ua):

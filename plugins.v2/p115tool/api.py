@@ -19,6 +19,18 @@ SAFETY_REASONS={
     'Temporary write outcome unresolved':'TEMP_WRITE_UNRESOLVED',
     'Temporary recovery cooling down':'TEMP_RECOVERY_COOLDOWN',
     'Temporary transfer outcome unknown':'TEMP_TRANSFER_UNKNOWN',
+    'Temporary transfer awaiting visibility':'TEMP_TRANSFER_PENDING',
+    'Temporary playback code unavailable':'TEMP_PICKCODE_MISSING',
+    'Share contains no media':'SHARE_MEDIA_NOT_AVAILABLE',
+    'Share identity is ambiguous':'SHARE_IDENTITY_NOT_UNIQUE',
+    'Share playback validation failed':'SHARE_PLAYBACK_NOT_AVAILABLE',
+    'Share mapping changed':'SHARE_MAPPING_CHANGED',
+    'Recycle file not uniquely verified':'RECYCLE_IDENTITY_NOT_UNIQUE',
+    'Recycle purge outcome unconfirmed':'RECYCLE_PURGE_UNCONFIRMED',
+    'Unsupported recycle listing':'RECYCLE_LIST_UNSUPPORTED',
+    'Unsupported recycle entry':'RECYCLE_ENTRY_UNSUPPORTED',
+    'Invalid recycle entry identity':'RECYCLE_ENTRY_INVALID',
+    'Incomplete recycle listing':'RECYCLE_LIST_INCOMPLETE',
     'Temporary directory not empty':'TEMP_FOLDER_NOT_EMPTY',
     'Temporary directory not configured':'TEMP_ROOT_NOT_CONFIGURED',
     'Invalid temporary root':'TEMP_ROOT_INVALID',
@@ -39,11 +51,11 @@ SAFETY_REASONS={
     'Download URL is outside configured 115 CDN domains':'LINK_DOMAIN_NOT_ALLOWED',
 }
 
-def log_failure(exc):
+def log_failure(exc,context='playback'):
     code=getattr(exc,'upstream_code',None)
     code=code if type(code) is int else None
     operation=getattr(exc,'operation','unknown')
-    allowed={'fs_file','fs_files','fs_mkdir','share_snap','share_receive','download_url','share_download_url','share_send','share_update','fs_delete'}
+    allowed={'fs_file','fs_files','fs_mkdir','share_snap','share_receive','download_url','share_download_url','share_send','share_update','fs_delete','recyclebin_list','recyclebin_clean'}
     operation=operation if isinstance(operation,str) and operation in allowed else 'unknown'
     sdk_error=getattr(exc,'sdk_error','none')
     sdk_error=sdk_error if isinstance(sdk_error,str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,80}',sdk_error) else 'unknown'
@@ -51,9 +63,11 @@ def log_failure(exc):
     reason=SAFETY_REASONS.get(message,'unknown') if type(message) is str else 'unknown'
     copy_state=getattr(exc,'copy_state',None)
     copy_state=copy_state if type(copy_state) is str and copy_state in {
-        'FOLDER_UNKNOWN','RECEIVE_UNKNOWN','DELETE_UNKNOWN','FOLDER_CREATING','RECEIVING','DELETING'} else 'none'
+        'FOLDER_UNKNOWN','RECEIVE_UNKNOWN','DELETE_UNKNOWN','FOLDER_CREATING','RECEIVING','DELETING',
+        'RECEIVED','READY','EMPTY'} else 'none'
     # Never log the request, token, URL, or exception text/upstream payload.
-    logger.warning(f'115播放失败：接口={operation}，类型={type(exc).__name__}，SDK异常={sdk_error}，上游错误码={code}，原因={reason}，副本状态={copy_state}')
+    label='115回收站处理失败' if context=='recycle' else '115播放失败'
+    logger.warning(f'{label}：接口={operation}，类型={type(exc).__name__}，SDK异常={sdk_error}，上游错误码={code}，原因={reason}，副本状态={copy_state}')
 
 def routes(plugin):
     async def play(request: Request):
