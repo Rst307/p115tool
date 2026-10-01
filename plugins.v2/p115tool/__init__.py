@@ -22,7 +22,7 @@ class P115Tool(_PluginBase):
     plugin_name='115 工具箱'
     plugin_desc='递归生成分类STRM，115个人网盘302直链播放'
     plugin_icon='https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png'
-    plugin_version='0.2.8'
+    plugin_version='0.2.9'
     plugin_author='Rst307'
     author_url='https://github.com/Rst307'
     plugin_config_prefix='p115tool_'
@@ -70,10 +70,36 @@ class P115Tool(_PluginBase):
         from .native_ui import routes as native
         return playback(self)+native(self)
     def get_service(self):
-        if not self.get_state() or not self._config.scheduled: return []
+        if not self.get_state(): return []
         from apscheduler.triggers.cron import CronTrigger
-        hour,minute=map(int,self._config.scan_time.split(':'))
-        return [{'id':'p115tool_strm','name':'115分类STRM生成','trigger':CronTrigger(hour=hour,minute=minute,timezone='Asia/Shanghai'),'func':self.run_generate,'kwargs':{}}]
+        jobs=[]
+        for enabled,time,job_id,name,func in (
+            (self._config.scheduled,self._config.scan_time,'p115tool_strm','115分类STRM生成',self.run_generate),
+            (self._config.organize_scheduled and bool(self._config.organize_cids),self._config.organize_time,'p115tool_organize','115 MoviePilot定时整理',self.run_organize)):
+            if enabled:
+                hour,minute=map(int,time.split(':'))
+                jobs.append({'id':job_id,'name':name,'trigger':CronTrigger(hour=hour,minute=minute,timezone='Asia/Shanghai'),'func':func,'kwargs':{}})
+        return jobs
+    def run_organize(self):
+        with self._lifecycle:
+            if not self._service or not self._config.organize_scheduled or not self._config.organize_cids: return
+            from .host_transfer import organize
+            try:
+                result=organize(self._service,[s['cid'] for s in self._config.organize_cids])
+                if result['state']=='UNKNOWN' or any(item['state']=='UNKNOWN' for item in result['items']):
+                    # Persist the disabled switch, never the host payload or event.
+                    self._config.organize_scheduled=False
+                    self.update_config(asdict(self._config))
+                    logger.warning('115定时整理提交结果未知，已关闭定时整理；请核实MoviePilot任务后再手动开启。')
+                elif result['state']!='SUBMITTED':
+                    logger.warning('115定时整理未提交或部分被拒绝，请检查MoviePilot存储、待整理目录和任务状态。')
+                return result
+            except Exception:
+                # Do not retry an unexpected submission outcome on the next tick.
+                self._config.organize_scheduled=False
+                logger.warning('115定时整理异常，已关闭本次运行的定时整理；请核实MoviePilot任务及配置。')
+                try: self.update_config(asdict(self._config))
+                except Exception: logger.warning('115定时整理停用配置保存失败，请手动关闭定时整理。')
     def run_generate(self):
         with self._lifecycle:
             if self._service:

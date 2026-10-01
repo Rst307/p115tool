@@ -15,6 +15,8 @@ def organize(service, cids):
     sources = {source['cid']: source for source in service.config.organize_cids}
     if any(cid not in sources for cid in cids):
         raise ValueError('Unconfigured folder')
+    if getattr(service,'_organize_unknown',False):
+        return {'items': [], 'state': 'UNKNOWN'}
     if service._worker and service._worker.is_alive():
         return {'items': [], 'state': 'BUSY'}
     try:
@@ -56,5 +58,6 @@ def organize(service, cids):
             state = 'UNKNOWN'
         results.append({'cid': cid, 'state': state})
         if state == 'UNKNOWN':
+            service._organize_unknown=True
             break  # Never retry or submit remaining roots after an unknown result.
     return {'items': results, 'state': 'SUBMITTED' if all(r['state'] == 'SUBMITTED' for r in results) else 'ATTENTION'}

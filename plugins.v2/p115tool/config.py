@@ -15,6 +15,8 @@ class Config:
     source_cids: list = field(default_factory=list)
     organize_cids: list = field(default_factory=list)
     scheduled: bool = False
+    organize_scheduled: bool = False
+    organize_time: str = '02:00'
     auto_after_transfer: bool = False
     scan_time: str = '03:00'
     request_timeout: int = 30
@@ -28,7 +30,7 @@ class Config:
         if 'source_cids_json' in data:
             data['source_cids'] = json.loads(data.pop('source_cids_json'))
         data = {k:v for k,v in data.items() if k in {f.name for f in fields(cls)}}
-        for k in ('enabled','scheduled','auto_after_transfer'):
+        for k in ('enabled','scheduled','organize_scheduled','auto_after_transfer'):
             if k in data and type(data[k]) is not bool: raise ValueError('Invalid boolean')
         if 'request_timeout' in data:
             v=data['request_timeout']
@@ -36,9 +38,10 @@ class Config:
             if type(v) is not int or not 5<=v<=120: raise ValueError('Invalid timeout')
             data['request_timeout']=v
         cfg=cls(**data)
-        for k in ('cookie','data_dir','strm_dir','public_url','playback_prefix','scan_time'):
+        for k in ('cookie','data_dir','strm_dir','public_url','playback_prefix','scan_time','organize_time'):
             if not isinstance(getattr(cfg,k),str): raise ValueError('Invalid text')
         if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',cfg.scan_time): raise ValueError('Invalid time')
+        if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',cfg.organize_time): raise ValueError('Invalid time')
         cfg.public_url=cfg.public_url.rstrip('/')
         url=urlsplit(cfg.public_url)
         if url.scheme not in ('http','https') or not url.hostname or url.username or url.password or url.query or url.fragment or any(ord(c)<33 for c in cfg.public_url): raise ValueError('Invalid public URL')

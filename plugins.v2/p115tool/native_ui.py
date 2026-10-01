@@ -40,7 +40,9 @@ def dispatch(plugin,route,payload):
             return organize(service,payload['cids'])
         if route=='data' and payload=={'kind':'status'}: return service.snapshot()
         if route=='data' and payload=={'kind':'organize_sources'}:
-            return {'items':[{'cid':source['cid'],'prefix':source['prefix']} for source in service.config.organize_cids]}
+            return {'items':[{'cid':source['cid'],'prefix':source['prefix']} for source in service.config.organize_cids],
+                    'scheduled':plugin._config.organize_scheduled,'time':plugin._config.organize_time,
+                    'paused':getattr(service,'_organize_unknown',False)}
         if route=='data' and payload=={'kind':'sources'}:
             return {'items':[{'cid':source['cid'],'prefix':source['prefix']} for source in service.config.source_cids]}
         if route=='data' and set(payload)=={'kind','cid'} and payload['kind']=='folders':
