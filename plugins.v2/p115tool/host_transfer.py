@@ -51,7 +51,7 @@ def organize(service, cids):
     for cid, _, item in roots:
         try:
             accepted, _ = transfer.manual_transfer(
-                fileitem=item, target_storage='u115', transfer_type='copy',
+                fileitem=item, target_storage='u115', transfer_type='move',
                 background=True, force=False, sync_extra_files=True)
             state = 'SUBMITTED' if accepted is True else 'REJECTED'
         except Exception:
