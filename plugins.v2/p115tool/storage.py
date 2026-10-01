@@ -279,6 +279,21 @@ class StorageManager:
             raise SafetyError('Temporary contents not uniquely verified')
         return candidates[0]
 
+    def create_copy_folder(self, media_id, root):
+        if not root: raise SafetyError('Temporary directory not configured')
+        if self.client.directory_path(root)=='/': raise SafetyError('Invalid temporary root')
+        name='p115tool-'+uuid.uuid4().hex
+        # Commit the new identity before creating; an unknown result is never retried.
+        self.service.query("INSERT INTO resource_copies(media_id,root_cid,folder_name,stage) VALUES(?,?,?,'FOLDER_CREATING') "
+            "ON CONFLICT(media_id) DO UPDATE SET root_cid=excluded.root_cid,folder_name=excluded.folder_name,"
+            "folder_cid='',file_id='',received_at=0,lease_until=0,stage='FOLDER_CREATING'",(media_id,root,name))
+        try: cid=self.client.create_temp_directory(root,name)
+        except Exception:
+            self.service.query("UPDATE resource_copies SET stage='FOLDER_UNKNOWN' WHERE media_id=?",(media_id,))
+            raise ToolError('Temporary directory outcome unknown') from None
+        self.service.query("UPDATE resource_copies SET folder_cid=?,stage='EMPTY' WHERE media_id=?",(cid,media_id))
+        return self.copy(media_id)
+
     def ensure_copy(self, media_id):
         with self._gate:
             if self.service._stop.is_set(): raise InterruptedError()
@@ -288,7 +303,10 @@ class StorageManager:
             if copy and copy['stage']=='READY':
                 try: actual=self.client.stat(copy['file_id'])
                 except MissingFile:
-                    self.validate_folder(copy)
+                    try: self.validate_folder(copy)
+                    except MissingFile:
+                        self.create_copy_folder(media_id,copy['root_cid'])
+                        return self.ensure_copy(media_id)
                     if list(self.client.list_files(copy['folder_cid'])): raise SafetyError('Temporary contents changed')
                     self.service.query("UPDATE resource_copies SET stage='EMPTY',file_id='',received_at=0,lease_until=0 WHERE media_id=?",(media_id,))
                     return self.ensure_copy(media_id)
@@ -302,18 +320,11 @@ class StorageManager:
                 self.service.query("UPDATE resource_copies SET file_id=?,stage='READY',received_at=? WHERE media_id=?",(actual.file_id,time.time(),media_id))
                 return actual
             if not copy:
-                root=self.config.temp_cid
-                if not root: raise SafetyError('Temporary directory not configured')
-                if self.client.directory_path(root)=='/': raise SafetyError('Invalid temporary root')
-                name='p115tool-'+uuid.uuid4().hex
-                self.service.query("INSERT INTO resource_copies(media_id,root_cid,folder_name,stage) VALUES(?,?,?,'FOLDER_CREATING')",(media_id,root,name))
-                try: cid=self.client.create_temp_directory(root,name)
-                except Exception:
-                    self.service.query("UPDATE resource_copies SET stage='FOLDER_UNKNOWN' WHERE media_id=?",(media_id,))
-                    raise ToolError('Temporary directory outcome unknown') from None
-                self.service.query("UPDATE resource_copies SET folder_cid=?,stage='EMPTY' WHERE media_id=?",(cid,media_id))
-                copy=self.copy(media_id)
-            self.validate_folder(copy)
+                copy=self.create_copy_folder(media_id,self.config.temp_cid)
+            try: self.validate_folder(copy)
+            except MissingFile:
+                copy=self.create_copy_folder(media_id,copy['root_cid'])
+                self.validate_folder(copy)
             if list(self.client.list_files(copy['folder_cid'])): raise SafetyError('Temporary directory not empty')
             # Verify sharing metadata again immediately before receiving.
             members=list(self.client.share_files(row['share_code'],row['password'],'0')) if row['own'] else None
