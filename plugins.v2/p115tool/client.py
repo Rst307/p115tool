@@ -19,7 +19,8 @@ def check_response(response):
     if not isinstance(response, dict) or response.get("state") not in (True, 1):
         # Never include upstream messages/payloads: they can contain cookies or URLs.
         code=response_code(response)
-        error=(MissingFile("Remote file no longer exists") if code in (20013, 20018, 50003, 90008)
+        # The pinned SDK also maps 800001 (directory does not exist) to ENOENT.
+        error=(MissingFile("Remote file no longer exists") if code in (20013, 20018, 50003, 90008, 800001)
                else RemoteError("115 request failed or returned an unrecognized response"))
         error.upstream_code=code
         raise error
