@@ -178,7 +178,18 @@ class P115ClientManager:
         rows = resp.get("data")
         if not rows:
             raise MissingFile("Remote file not found")
-        return normalize_file(rows[0] if isinstance(rows, list) else rows)
+        data=rows[0] if isinstance(rows,list) else rows
+        file=normalize_file(data)
+        if file.file_id!=str(fid):
+            raise SafetyError('115 file identity mismatch')
+        # get_info also exposes permanent-deletion metadata (aid=120).
+        # Deleted records are not live identities, even when old fields changed.
+        # The pinned SDK documents aid=7 as recycle bin and aid=120 as deleted.
+        if str(data.get('aid','')) in ('7','120'):
+            error=MissingFile('Remote file no longer exists')
+            error.operation='fs_file'
+            raise error
+        return file
 
     def _link(self, value):
         url = str(value)

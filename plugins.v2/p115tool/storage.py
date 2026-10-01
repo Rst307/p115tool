@@ -444,7 +444,9 @@ class StorageManager:
                     raise SafetyError('Temporary contents changed')
                 return actual
             if copy and copy['stage'] in ('FOLDER_UNKNOWN','RECEIVE_UNKNOWN','DELETE_UNKNOWN','FOLDER_CREATING','RECEIVING','DELETING'):
-                raise SafetyError('Temporary write outcome unresolved')
+                error=SafetyError('Temporary write outcome unresolved')
+                error.copy_state=copy['stage']
+                raise error
             if copy and copy['stage']=='RECEIVED':
                 actual=self.locate_copy(row,copy)
                 self.service.query("UPDATE resource_copies SET file_id=?,stage='READY',received_at=? WHERE media_id=?",(actual.file_id,time.time(),media_id))
