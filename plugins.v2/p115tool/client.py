@@ -188,3 +188,70 @@ class P115ClientManager:
 
     def normal_link(self, pickcode, ua):
         return self._link(self.call("download_url", pickcode, user_agent=ua))
+
+    def share_files(self, code, password, cid='0'):
+        offset, seen = 0, set()
+        while True:
+            response = check_response(self.call('share_snap', {'share_code':code,
+                'receive_code':password, 'cid':cid, 'offset':offset, 'limit':1000}))
+            data = response.get('data', {})
+            rows = data.get('list')
+            count = data.get('count')
+            if not isinstance(rows, list) or type(count) not in (int,str) or not str(count).isdigit():
+                raise RemoteError('Malformed share listing')
+            if int(count) > 100000: raise SafetyError('Share listing limit')
+            for row in rows:
+                file = normalize_file(row, cid)
+                from .strm import safe_parts
+                if (not re.fullmatch(r'[1-9][0-9]{0,19}',file.file_id)
+                        or file.file_id in seen or len(safe_parts(file.name)) != 1):
+                    raise SafetyError('Unsafe share member')
+                seen.add(file.file_id)
+                yield file
+            offset += len(rows)
+            if offset == int(count): break
+            if not rows or offset > int(count): raise RemoteError('Incomplete share listing')
+
+    def create_share(self, fid):
+        response = check_response(self.call('share_send', {'file_ids':fid}))
+        data = response.get('data', {})
+        code, password = data.get('share_code'), data.get('receive_code')
+        if (not isinstance(code,str) or not re.fullmatch(r'[A-Za-z0-9]{6,64}',code)
+                or not isinstance(password,str) or not re.fullmatch(r'[A-Za-z0-9]{4}',password)):
+            raise RemoteError('Incomplete share creation result')
+        return code, password
+
+    def retain_share(self, code):
+        check_response(self.call('share_update', {'share_code':code,'share_duration':-1}))
+
+    def share_link(self, code, password, fid, ua):
+        return self._link(self.call('share_download_url', {'share_code':code,
+            'receive_code':password,'file_id':fid}, headers={'User-Agent':ua}))
+
+    def create_temp_directory(self, parent, name):
+        response = check_response(self.call('fs_mkdir', name, pid=parent))
+        cid = str(response.get('cid') or response.get('data',{}).get('cid') or '')
+        if not re.fullmatch(r'[1-9][0-9]{0,19}',cid): raise RemoteError('Missing temporary directory identity')
+        return cid
+
+    def receive_to_temp(self, code, password, fid, cid):
+        check_response(self.call('share_receive', {'share_code':code,
+            'receive_code':password,'file_id':fid,'cid':cid}))
+
+    def delete_verified_file(self, fid):
+        # Only callers holding a persisted intent and verified file identity use this.
+        check_response(self.call('fs_delete', fid))
+
+    def probe_range(self, link, ua, size):
+        from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
+        class NoRedirect(HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs): return None
+        self.validate_url(link.url)
+        request = Request(link.url, headers={'User-Agent':ua,'Range':'bytes=0-0','Accept-Encoding':'identity'})
+        try:
+            with build_opener(NoRedirect(), ProxyHandler({})).open(request, timeout=self.config.request_timeout) as response:
+                if (response.status != 206 or response.headers.get('Content-Range') != f'bytes 0-0/{size}'
+                        or len(response.read(2)) != 1):
+                    raise SafetyError('Share playback validation failed')
+        except SafetyError: raise
+        except Exception: raise RemoteError('Share playback validation failed') from None

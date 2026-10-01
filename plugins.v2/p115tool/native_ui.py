@@ -25,7 +25,7 @@ def dispatch(plugin,route,payload):
         if route=='data' and (payload=={'kind':'bootstrap'} or set(payload)=={'kind','ui_contract'} and payload.get('kind')=='bootstrap'):
             current=type(payload.get('ui_contract')) is int and payload['ui_contract']==3
             return {'enabled':plugin.get_state() if current else False,
-                    'error':plugin._initialization_error if current else '插件页面已升级，请按 Ctrl+F5 强制刷新整个 MoviePilot 页面，再重新打开插件。旧页面的分享和缓存功能已移除。',
+                    'error':plugin._initialization_error if current else '插件页面已升级，请按 Ctrl+F5 强制刷新整个 MoviePilot 页面，再重新打开插件。旧页面接口已停用，请使用新版存储与STRM页面。',
                     'ui_contract':3,'refresh_required':not current}
         # A request already sent by the cached 0.1.x page may arrive after upgrade.
         # Return only an upgrade notice; do not expose or revive its retired data.
@@ -35,6 +35,22 @@ def dispatch(plugin,route,payload):
         service=plugin._service
         if not service: raise ToolError('Service unavailable')
         if route=='action' and payload=={'action':'generate'}: return service.start()
+        if route=='action' and set(payload)=={'action','link','password'} and payload['action']=='import_share':
+            return service.storage.start('import',{'link':payload['link'],'password':payload['password']})
+        if route=='action' and set(payload)=={'action','ids','delete_source'} and payload['action']=='virtualize':
+            return service.storage.start('virtualize',{'ids':payload['ids'],'delete_source':payload['delete_source']})
+        if route=='action' and set(payload)=={'action','ids'} and payload['action']=='reconcile_storage':
+            return service.storage.start('reconcile',{'ids':payload['ids']})
+        if route=='action' and payload=={'action':'cleanup_copies'}: return service.storage.start('cleanup')
+        if route=='action' and set(payload)=={'action','id','link','password'} and payload['action']=='attach_share':
+            return service.storage.attach_share(payload['id'],payload['link'],payload['password'])
+        if route=='data' and set(payload)=={'kind','page','storage','search'} and payload['kind']=='storage':
+            return service.storage.listing(payload['page'],payload['storage'],payload['search'])
+        if route=='data' and set(payload)=={'kind','id'} and payload['kind']=='share_details':
+            if not isinstance(payload['id'],str) or len(payload['id'])>128: raise ValueError('Invalid media')
+            row=service.storage.row(payload['id'])
+            if not row or not row['share_code']: raise ValueError('Share unavailable')
+            return {'url':'https://115.com/s/'+row['share_code'],'password':row['password']}
         if route=='action' and set(payload)=={'action','cids'} and payload['action']=='organize':
             from .host_transfer import organize
             return organize(service,payload['cids'])

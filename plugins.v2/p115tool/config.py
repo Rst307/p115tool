@@ -20,6 +20,9 @@ class Config:
     auto_after_transfer: bool = False
     scan_time: str = '03:00'
     request_timeout: int = 30
+    temp_cid: str = ''
+    temp_days: int = 7
+    temp_cleanup: bool = True
     allowed_cdn_suffixes: list = field(default_factory=lambda: ['115.com','115cdn.com','115cdn.net','115cdn.cn'])
     media_extensions: list = field(default_factory=lambda: ['.mkv','.mp4','.avi','.mov','.ts','.m2ts','.iso','.wmv','.flv','.m4v','.mpg','.mpeg'])
 
@@ -30,7 +33,7 @@ class Config:
         if 'source_cids_json' in data:
             data['source_cids'] = json.loads(data.pop('source_cids_json'))
         data = {k:v for k,v in data.items() if k in {f.name for f in fields(cls)}}
-        for k in ('enabled','scheduled','organize_scheduled','auto_after_transfer'):
+        for k in ('enabled','scheduled','organize_scheduled','auto_after_transfer','temp_cleanup'):
             if k in data and type(data[k]) is not bool: raise ValueError('Invalid boolean')
         if 'request_timeout' in data:
             v=data['request_timeout']
@@ -38,6 +41,10 @@ class Config:
             if type(v) is not int or not 5<=v<=120: raise ValueError('Invalid timeout')
             data['request_timeout']=v
         cfg=cls(**data)
+        if not isinstance(cfg.temp_cid,str) or (cfg.temp_cid and not re.fullmatch(r'[1-9][0-9]{0,19}',cfg.temp_cid)):
+            raise ValueError('Invalid temporary directory')
+        if isinstance(cfg.temp_days,str) and re.fullmatch(r'\d{1,3}',cfg.temp_days): cfg.temp_days=int(cfg.temp_days)
+        if type(cfg.temp_days) is not int or not 1<=cfg.temp_days<=365: raise ValueError('Invalid retention days')
         for k in ('cookie','data_dir','strm_dir','public_url','playback_prefix','scan_time','organize_time'):
             if not isinstance(getattr(cfg,k),str): raise ValueError('Invalid text')
         if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',cfg.scan_time): raise ValueError('Invalid time')

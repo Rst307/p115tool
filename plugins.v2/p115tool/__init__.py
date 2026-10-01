@@ -20,9 +20,9 @@ except ModuleNotFoundError as exc:
 
 class P115Tool(_PluginBase):
     plugin_name='115 工具箱'
-    plugin_desc='递归生成分类STRM，115个人网盘302直链播放'
+    plugin_desc='实际与虚拟存储、分享临时转存、分类STRM及302播放'
     plugin_icon='https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png'
-    plugin_version='0.2.9'
+    plugin_version='0.2.10'
     plugin_author='Rst307'
     author_url='https://github.com/Rst307'
     plugin_config_prefix='p115tool_'
@@ -79,7 +79,16 @@ class P115Tool(_PluginBase):
             if enabled:
                 hour,minute=map(int,time.split(':'))
                 jobs.append({'id':job_id,'name':name,'trigger':CronTrigger(hour=hour,minute=minute,timezone='Asia/Shanghai'),'func':func,'kwargs':{}})
+        if self._config.temp_cleanup and self._config.temp_cid:
+            jobs.append({'id':'p115tool_temp_cleanup','name':'115临时副本清理',
+                         'trigger':CronTrigger(minute=15,timezone='Asia/Shanghai'),
+                         'func':self.run_cleanup,'kwargs':{}})
         return jobs
+    def run_cleanup(self):
+        with self._lifecycle:
+            if self._service and self._config.temp_cleanup and self._config.temp_cid:
+                try: return self._service.storage.start('cleanup')
+                except Exception: logger.warning('115临时副本清理未启动，请检查插件状态。')
     def run_organize(self):
         with self._lifecycle:
             if not self._service or not self._config.organize_scheduled or not self._config.organize_cids: return
@@ -128,4 +137,4 @@ class P115Tool(_PluginBase):
         data=asdict(self._config)
         return [{'component':'VAlert','props':{'type':'info'},'text':'配置115源文件夹、STRM输出目录和播放地址，然后在详情页生成STRM。'}],data
     def get_page(self):
-        return [{'component':'VAlert','props':{'type':'info'},'text':self._initialization_error or '仅提供分类STRM生成和302直链播放，请使用原生Vue详情页。'}]
+        return [{'component':'VAlert','props':{'type':'info'},'text':self._initialization_error or '实际与虚拟存储、分类STRM和302播放，请使用原生Vue详情页。'}]

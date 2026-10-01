@@ -1,4 +1,4 @@
-"""Read-only 115 traversal, stable local playback mapping and one STRM worker."""
+"""Personal-drive traversal and stable STRM mapping, with explicit storage tasks."""
 from pathlib import Path
 from contextlib import closing
 import json
@@ -55,6 +55,8 @@ class Service:
                         WHERE m.storage_type='NORMAL' AND m.source_deleted=0''')
             old=self._state()
             if old.get('state')=='RUNNING': old['state']='INTERRUPTED'; self._save_state(old)
+            from .storage import StorageManager
+            self.storage=StorageManager(self)
         except Exception:
             self.client.close(); self._file_lock.close(); raise
 
@@ -80,10 +82,15 @@ class Service:
     def start(self,rerun=False):
         with self._lock:
             if self._closed: raise ToolError('Service stopped')
+            if self.storage.busy:
+                if rerun:
+                    self._rerun=True
+                    return self.snapshot()
+                raise ToolError('Storage task running')
             if self._worker and self._worker.is_alive():
                 if rerun: self._rerun=True
                 return self.snapshot()
-            if not self.config.source_cids: raise ValueError('Configure source folders')
+            if not self.config.source_cids and not self.storage.virtual_rows(): raise ValueError('Configure source folders')
             self._save_state({'state':'RUNNING','found':0,'generated':0,'failed':0,'error':None})
             self._worker=threading.Thread(target=self._generate_pending,name='p115tool-strm',daemon=True)
             self._worker.start()
@@ -124,6 +131,7 @@ class Service:
         state['paths']=[]
         try:
             for source in self.config.source_cids:
+                if self.storage.skip_directory(source['cid']): continue
                 # Include ancestors even when the selected CID is a category or
                 # a show folder and its manually configured prefix is only '/'.
                 resolve_path=getattr(self.client,'directory_path',None)
@@ -141,7 +149,10 @@ class Service:
                         safe_parts(file.name)
                         if '/' in file.name: raise SafetyError('Unexpected filename')
                         path='/'.join(filter(None,[relative,file.name]))
-                        if file.is_dir: stack.append((file.file_id,path)); continue
+                        if file.is_dir:
+                            if not self.storage.skip_directory(file.file_id): stack.append((file.file_id,path))
+                            continue
+                        if self.storage.skip_file(file.file_id): continue
                         if Path(file.name).suffix.lower() not in self.config.media_extensions or file.file_id in seen_files: continue
                         seen_files.add(file.file_id); state['found']+=1
                         try:
@@ -152,35 +163,8 @@ class Service:
                                 file=detail
                             if not file.pickcode: raise SafetyError('Missing pickcode')
                             destination=classify('/' if actual_path else prefix,actual_path.lstrip('/') if actual_path else path,**({'recognizer':self.recognizer} if self.recognizer else {}))
-                            previous=self.query('SELECT strm_path FROM strm_files WHERE file_id=?',(file.file_id,),one=True)
                             token=self.register(file,destination)
-                            target=self.strm.root.joinpath(*safe_parts(destination+'.strm'))
-                            proof=self.query('SELECT * FROM strm_output_proofs WHERE path=?',(str(target),),one=True)
-                            digest=proof['digest'] if proof and proof['file_id']==file.file_id else None
-                            if not digest and previous and previous['strm_path'] and Path(previous['strm_path']).resolve()==target.resolve():
-                                digest=self.legacy_loopback_digest(target,token)
-                            checkpoint=[]
-                            def before_replace():
-                                pending=self.query("SELECT id FROM strm_address_updates WHERE path=? AND state IN ('PENDING','UNKNOWN')",(str(target),),one=True)
-                                if pending: raise SafetyError('Address update outcome unresolved')
-                                self.query('INSERT INTO strm_address_updates(path,old_digest,new_digest,state) VALUES(?,?,?,?)',
-                                    (str(target),digest,hashlib.sha256((self.config.playback_url(token)+'\n').encode('utf-8')).hexdigest(),'PENDING'))
-                                checkpoint.append(self.query('SELECT max(id) id FROM strm_address_updates',one=True)['id'])
-                            try:
-                                output=self.strm.generate(destination,token,expected_digest=digest,before_replace=before_replace)
-                            except Exception:
-                                if checkpoint: self.query("UPDATE strm_address_updates SET state='UNKNOWN' WHERE id=?",(checkpoint[0],))
-                                raise
-                            written=Path(output).read_bytes()
-                            if written.decode('utf-8').replace('\r\n','\n')!=self.config.playback_url(token)+'\n':
-                                raise SafetyError('Output changed before ownership recording')
-                            self.query('INSERT INTO strm_output_proofs VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET file_id=excluded.file_id,digest=excluded.digest',
-                                (output,file.file_id,hashlib.sha256(written).hexdigest()))
-                            if checkpoint: self.query("UPDATE strm_address_updates SET state='DONE' WHERE id=?",(checkpoint[0],))
-                            if previous and previous['strm_path'] and previous['strm_path']!=output:
-                                if self.relocate(file.file_id,previous['strm_path'],output,token)=='DONE':
-                                    state['relocated']+=1
-                            self.query('UPDATE strm_files SET strm_path=? WHERE file_id=?',(output,file.file_id))
+                            output=self.write_output(file.file_id,destination,token,state)
                             outputs[self.config.playback_url(token)+'\n']=(file.file_id,output,token)
                             if len(state['paths'])<10:
                                 state['paths'].append({'source':actual_path or prefix.rstrip('/')+'/'+path,'output':output})
@@ -189,6 +173,17 @@ class Service:
                             state['failed']+=1
                             state['error']='OUTPUT_CONFLICT' if isinstance(exc,SafetyError) else 'FILE_GENERATION_FAILED'
                         self._save_state(state)
+            for row in self.storage.virtual_rows():
+                if self._stop.is_set(): raise InterruptedError()
+                state['found']+=1
+                try:
+                    output=self.write_output(row['file_id'],row['relative_path'],row['token'],state)
+                    outputs[self.config.playback_url(row['token'])+'\n']=(row['file_id'],output,row['token'])
+                    state['generated']+=1
+                except Exception as exc:
+                    state['failed']+=1
+                    state['error']='OUTPUT_CONFLICT' if isinstance(exc,SafetyError) else 'FILE_GENERATION_FAILED'
+                self._save_state(state)
             state['state']='DONE' if not state['failed'] else 'PARTIAL'
             if state['state']=='DONE':
                 # Earlier versions updated strm_path but left their old output
@@ -219,6 +214,36 @@ class Service:
             state='UNKNOWN'
         self.query('UPDATE strm_relocations SET state=? WHERE file_id=? AND old_path=?',(state,fid,old))
         return state
+
+    def write_output(self, fid, destination, token, state=None):
+        """Use the same ownership/checkpoint rules for actual and virtual STRMs."""
+        previous=self.query('SELECT strm_path FROM strm_files WHERE file_id=?',(fid,),one=True)
+        target=self.strm.root.joinpath(*safe_parts(destination+'.strm'))
+        proof=self.query('SELECT * FROM strm_output_proofs WHERE path=?',(str(target),),one=True)
+        digest=proof['digest'] if proof and proof['file_id']==fid else None
+        if not digest and previous and previous['strm_path'] and Path(previous['strm_path']).resolve()==target.resolve():
+            digest=self.legacy_loopback_digest(target,token)
+        checkpoint=[]
+        def before_replace():
+            if self.query("SELECT id FROM strm_address_updates WHERE path=? AND state IN ('PENDING','UNKNOWN')",(str(target),),one=True):
+                raise SafetyError('Address update outcome unresolved')
+            self.query('INSERT INTO strm_address_updates(path,old_digest,new_digest,state) VALUES(?,?,?,?)',
+                (str(target),digest,hashlib.sha256((self.config.playback_url(token)+'\n').encode()).hexdigest(),'PENDING'))
+            checkpoint.append(self.query('SELECT max(id) id FROM strm_address_updates',one=True)['id'])
+        try: output=self.strm.generate(destination,token,expected_digest=digest,before_replace=before_replace)
+        except Exception:
+            if checkpoint: self.query("UPDATE strm_address_updates SET state='UNKNOWN' WHERE id=?",(checkpoint[0],))
+            raise
+        content=Path(output).read_bytes()
+        if content.decode('utf-8').replace('\r\n','\n')!=self.config.playback_url(token)+'\n': raise SafetyError('Output changed')
+        self.query('INSERT INTO strm_output_proofs VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET file_id=excluded.file_id,digest=excluded.digest',
+            (output,fid,hashlib.sha256(content).hexdigest()))
+        if checkpoint: self.query("UPDATE strm_address_updates SET state='DONE' WHERE id=?",(checkpoint[0],))
+        if previous and previous['strm_path'] and previous['strm_path']!=output:
+            if self.relocate(fid,previous['strm_path'],output,token)=='DONE' and state is not None:
+                state['relocated']+=1
+        self.query('UPDATE strm_files SET strm_path=? WHERE file_id=?',(output,fid))
+        return output
 
     def legacy_loopback_digest(self,target,token):
         # Narrow compatibility repair for old plugin output. No arbitrary edited
@@ -253,10 +278,9 @@ class Service:
     def play(self,token,ua):
         with self._lock:
             if self._closed: raise ToolError('Service stopped')
-            row=self.query('SELECT pickcode FROM strm_files WHERE token=?',(token,),one=True)
+            row=self.query('SELECT file_id FROM strm_files WHERE token=?',(token,),one=True)
             if not row: raise MissingFile('Playback mapping unavailable')
-            link=self.client.normal_link(row['pickcode'],ua)
-            return link.url
+        return self.storage.play(row['file_id'],ua)
 
     def close(self):
         with self._lock:
@@ -264,5 +288,6 @@ class Service:
             self._auto_revision+=1; self._rerun=False
             if self._auto_timer: self._auto_timer.cancel(); self._auto_timer=None
         if worker and worker is not threading.current_thread(): worker.join()
+        self.storage.close()
         with self._lock:
             self.client.close(); self._file_lock.close()
