@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "递归生成分类STRM，115个人网盘302直链播放",
     "labels": "115,STRM,媒体管理",
-    "version": "0.2.6",
+    "version": "0.2.7",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.2.7": "优化原生配置和详情界面：分步配置、生成数量概览、独立整理区域、目录空状态与校验反馈、路径展开、手机及深色主题适配；目录读取失败禁止选择，防止重复提交",
       "v0.2.6": "修复修改302服务地址后旧STRM仍指向回环地址；按输出指纹原子更新并保留token，兼容已记录的旧默认回环地址，手改文件保留，未知替换不重试；配置提示Docker回环地址问题",
       "v0.2.5": "独立配置MoviePilot待整理文件夹与STRM生成源文件夹；整理只允许待整理目录，生成只扫描STRM源，升级不沿用旧整理选择",
       "v0.2.4": "逐文件用115列表完整路径保留类型/类别/剧名/季；分类改正后迁移已确认归属的旧STRM及空目录，先记录本地检查点，展示网盘与输出路径示例",

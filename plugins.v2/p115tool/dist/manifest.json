@@ -1,20 +1,20 @@
 {
   "files": {
-    "__federation_expose_Config-8RVYNQsS.css": "499e96f254dc6b78bdcb2b87b39f831e57421bfe3ee8982fddead5433f34d324",
-    "__federation_expose_Config-CNQlIISe.js": "9f6ea2463f2eed3880e8926d518bed4b220f933e8d13e76104af637a80b43a6a",
-    "__federation_expose_Page-BjgffL4b.js": "d0d35b936ebf6fe7bffa85ed992dea7f681ac26768f22c9a1475c83e4c55724a",
-    "__federation_expose_Page-CXLhDy-l.css": "e25b64725b6afa5e166ead66af393bdb4e4d18c8f1c4d788ba915cc3ed96f8fe",
+    "__federation_expose_Config-CEkKtPjm.js": "896504099e9b68c10ed5fd53469d88699e436278c8c8ba42135554041c27eb95",
+    "__federation_expose_Page-DkJf1WCX.js": "d9dd4178e320e7e959172d3e2805140959a326bc0a1678a4e4df493042957b20",
     "__federation_fn_import-E6wRZccp.js": "11a2d68813601dffb4a4bb619cabf25526a7a445b054e418100e24128f6bdca2",
-    "_plugin-vue_export-helper-DLxUpd2V.js": "a1c542b387e7f1a74d8b27060f5b735a15d582aa34d9e5f07b3962e71becce7b",
-    "remoteEntry.js": "4e80f443fa09278514e17d7f21ca7e53c0a0d65879f7ec53dc2e2b137495c9fd"
+    "remoteEntry.js": "b334708c6455b571306da89b7f424f0a4e6de7b0270825cc087d82c0e0349aae",
+    "ui-8ywdPfsL.css": "2ef95b8b815c42df3917d25905df1d3adeb130053ee97be788d2c60f59650136",
+    "ui-k79_arND.js": "dceae78a8f96fde590cccdcaf605ab68373d073118379085bd5084c3cbfd8fc6"
   },
   "sources": {
     "frontend/package-lock.json": "9fccb33dde7435c7fbd73b4a33f3b004c580ded3c57dd7fd4b9ac9cbe44bbb90",
     "frontend/vite.config.js": "8466c6e1a41893b25501139906a86a8d932bd5d51cccc102782a58b8a6c5f3a0",
     "frontend/src/config-schema.json": "a5338d955b09046ec0b16f3a9625b7955c763aae07dc722e474e6078745f932f",
-    "frontend/src/Config.vue": "dcc231fb605e7d8a5e46b2d74ab4f92cda0d9bbbb5aa7854fd26f1071aa3bc86",
+    "frontend/src/Config.vue": "5493c4b48d0470927a10914ef6e3c051df1bda5d905d24e4cca4e3c010f2bb5a",
     "frontend/src/host.js": "1b6b3ba9b35180c0b7338c1c464a9fadcaab6259e1a2e47139e2394ef9b60fb6",
     "frontend/src/main.js": "60929e90fdb9d5090b51b772a517645b8da18e347a2f0362de34be7bc7fae3a1",
-    "frontend/src/Page.vue": "7bbf18e1cfb82053fb60d8c7324db65358c74a60d226f8fa48ab6c6c0cb2aab6"
+    "frontend/src/Page.vue": "f44d03d58a6e26fdba2d9090545251de3ed2cfc2221b1fe219f0e8b38d1c4811",
+    "frontend/src/ui.css": "149d6317202234286588b8c32c28c346f84dcbbecb5855823060be4ebc11a342"
   }
 }
