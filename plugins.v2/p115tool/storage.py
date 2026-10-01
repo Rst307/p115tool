@@ -100,7 +100,8 @@ class StorageManager:
         for item in items:
             item['expires_at']=(item.pop('received_at') or 0)+self.config.temp_days*86400 if item['copy_state']=='READY' else None
         return {'items':items,'total':total,'page':page,'job':self.job(),'busy':self.busy,
-                'temp_days':self.config.temp_days,'cleanup_enabled':self.config.temp_cleanup}
+                'temp_days':self.config.temp_days,'cleanup_enabled':self.config.temp_cleanup,
+                'temp_configured':bool(self.config.temp_cid)}
 
     def _selection(self, ids):
         if (not isinstance(ids,list) or not ids or len(ids)>100
@@ -115,12 +116,12 @@ class StorageManager:
         if action=='import':
             if set(payload)!={'link','password'}: raise ValueError('Invalid import')
             args=parse_share(payload['link'],payload['password'])
-            if not self.config.temp_cid: raise ValueError('Configure temporary storage')
+            if not self.config.temp_cid: return {'state':'CONFIG_REQUIRED','field':'temp_cid'}
         elif action=='virtualize':
             if set(payload)!={'ids','delete_source'} or payload['delete_source'] is not True:
                 raise ValueError('Explicit source deletion authorization required')
             args=(self._selection(payload['ids']),)
-            if not self.config.temp_cid: raise ValueError('Configure temporary storage')
+            if not self.config.temp_cid: return {'state':'CONFIG_REQUIRED','field':'temp_cid'}
         elif action=='reconcile':
             if set(payload)!={'ids'}: raise ValueError('Invalid reconciliation')
             args=(self._selection(payload['ids']),)
