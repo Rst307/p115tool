@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "实际与虚拟存储、分享临时转存、分类STRM及302播放",
     "labels": "115,STRM,媒体管理",
-    "version": "0.2.27",
+    "version": "0.2.28",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.2.28": "新增单条和批量删除存储记录按钮及确认框；仅移除列表记录，保留网盘文件、分享、STRM、播放映射与副本清理检查点，扫描及重启不恢复显示",
       "v0.2.27": "补齐RECEIVED副本空目录或删除后的播放恢复；异步转存等待30秒并复用迟到副本，列表缺pickcode时核实详情；回收站失败新增脱敏原因日志，保留未知删除检查点",
       "v0.2.26": "兼容无单集编号的电视剧ISO移动：绕过宿主CMCT误判特典并虚报成功，按宿主剧名模板归入Season目录、保留原文件名；严格核实源和目标、持久移动检查点、未知结果不重试",
       "v0.2.25": "修复整理未显式传入媒体库目标：手动和定时移动到指定115 STRM媒体库，单库自动选用、多库明确选择；提交前核实目标身份并拦截目录重叠",

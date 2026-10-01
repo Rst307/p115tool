@@ -77,6 +77,7 @@ class StorageManager:
                 media_id TEXT PRIMARY KEY,path TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS actual_inventory_state (
                 id INTEGER PRIMARY KEY CHECK(id=1),scope TEXT NOT NULL,scanned_at REAL NOT NULL);''')
+            db.execute('CREATE TABLE IF NOT EXISTS removed_storage_records (media_id TEXT PRIMARY KEY,removed_at REAL NOT NULL)')
             for before,after in [('SHARE_CREATING','SHARE_CREATE_UNKNOWN'),('SOURCE_DELETING','SOURCE_DELETE_UNKNOWN')]:
                 db.execute('UPDATE resource_storage SET stage=? WHERE stage=?',(after,before))
             for before,after in [('FOLDER_CREATING','FOLDER_UNKNOWN'),('RECEIVING','RECEIVE_UNKNOWN'),('DELETING','DELETE_UNKNOWN')]:
@@ -108,7 +109,7 @@ class StorageManager:
         snapshot=self.service.query('SELECT * FROM actual_inventory_state WHERE id=1',one=True)
         current=bool(snapshot and snapshot['scope']==self.inventory_scope())
         path="CASE WHEN s.kind='VIRTUAL' THEN f.relative_path ELSE a.path END"
-        where="WHERE (s.kind='VIRTUAL' OR (? AND a.media_id IS NOT NULL)) AND (?='ALL' OR coalesce(s.kind,'ACTUAL')=?) AND instr(lower("+path+"),lower(?))>0"
+        where="WHERE NOT EXISTS (SELECT 1 FROM removed_storage_records r WHERE r.media_id=f.file_id) AND (s.kind='VIRTUAL' OR (? AND a.media_id IS NOT NULL)) AND (?='ALL' OR coalesce(s.kind,'ACTUAL')=?) AND instr(lower("+path+"),lower(?))>0"
         args=(current,kind,kind,search)
         joins=' FROM strm_files f LEFT JOIN resource_storage s ON s.media_id=f.file_id LEFT JOIN actual_inventory a ON a.media_id=f.file_id '
         total=self.service.query('SELECT count(*) n'+joins+where,args,one=True)['n']
@@ -125,6 +126,19 @@ class StorageManager:
                 'temp_configured':bool(self.config.temp_cid),'sources_configured':bool(self.config.source_cids),
                 'scanned_at':snapshot['scanned_at'] if current else None,
                 'queued':self._pending_action is not None}
+
+    def delete_records(self, ids):
+        # Remove list membership only. Playback mappings, copy ownership and all
+        # uncertain remote-write checkpoints must remain available after restart.
+        with self.service._lock:
+            if self.service._closed: raise ToolError('Service stopped')
+            if self.busy or self._pending_action is not None or (self.service._worker and self.service._worker.is_alive()):
+                return {'state':'BUSY'}
+            ids=self._selection(ids)
+            with closing(sqlite3.connect(self.service.path)) as db,db:
+                db.executemany('INSERT OR IGNORE INTO removed_storage_records VALUES(?,?)',
+                               [(media_id,time.time()) for media_id in ids])
+            return {'state':'RECORDS_DELETED','count':len(ids)}
 
     def request_refresh(self, after_transfer=False):
         with self.service._lock:
@@ -265,7 +279,8 @@ class StorageManager:
                     self.scan_actual(job)
                     args=([r['media_id'] for r in self.service.query(
                         "SELECT a.media_id FROM actual_inventory a LEFT JOIN resource_storage s "
-                        "ON s.media_id=a.media_id WHERE coalesce(s.kind,'ACTUAL')='ACTUAL' ORDER BY a.media_id")],)
+                        "ON s.media_id=a.media_id WHERE coalesce(s.kind,'ACTUAL')='ACTUAL' "
+                        "AND NOT EXISTS (SELECT 1 FROM removed_storage_records r WHERE r.media_id=a.media_id) ORDER BY a.media_id")],)
                     job['done']=0
                 job['total']=len(args[0])
                 self._job(job)

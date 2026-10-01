@@ -44,6 +44,8 @@ def dispatch(plugin,route,payload):
             return service.storage.start('virtualize_all',{'delete_source':payload['delete_source']})
         if route=='action' and set(payload)=={'action','ids'} and payload['action']=='reconcile_storage':
             return service.storage.start('reconcile',{'ids':payload['ids']})
+        if route=='action' and set(payload)=={'action','ids'} and payload['action']=='delete_storage_records':
+            return service.storage.delete_records(payload['ids'])
         if route=='action' and payload=={'action':'cleanup_copies'}: return service.storage.start('cleanup')
         if route=='action' and set(payload)=={'action','id','link','password'} and payload['action']=='attach_share':
             return service.storage.attach_share(payload['id'],payload['link'],payload['password'])
