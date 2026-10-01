@@ -174,7 +174,11 @@ class StorageManager:
             if set(payload)!={'ids','delete_source'} or payload['delete_source'] is not True:
                 raise ValueError('Explicit source deletion authorization required')
             args=(self._selection(payload['ids']),)
-            if not self.config.temp_cid: return {'state':'CONFIG_REQUIRED','field':'temp_cid'}
+        elif action=='virtualize_all':
+            if set(payload)!={'delete_source'} or payload['delete_source'] is not True:
+                raise ValueError('Explicit source deletion authorization required')
+            if not self.config.source_cids: return {'state':'SOURCES_REQUIRED'}
+            args=()
         elif action=='reconcile':
             if set(payload)!={'ids'}: raise ValueError('Invalid reconciliation')
             args=(self._selection(payload['ids']),)
@@ -205,16 +209,26 @@ class StorageManager:
             elif action=='scan': self.scan_actual(job)
             elif action=='cleanup': self.cleanup(job)
             else:
+                if action=='virtualize_all':
+                    # Refresh the complete configured scope before any remote write.
+                    self.scan_actual(job)
+                    args=([r['media_id'] for r in self.service.query(
+                        "SELECT a.media_id FROM actual_inventory a LEFT JOIN resource_storage s "
+                        "ON s.media_id=a.media_id WHERE coalesce(s.kind,'ACTUAL')='ACTUAL' ORDER BY a.media_id")],)
+                    job['done']=0
+                job['total']=len(args[0])
+                self._job(job)
                 for media_id in args[0]:
                     if self.service._stop.is_set(): raise InterruptedError()
                     try:
-                        if action=='virtualize': self.virtualize(media_id)
+                        if action in ('virtualize','virtualize_all'): self.virtualize(media_id)
                         else: self.reconcile(media_id)
                         job['done']+=1
+                    except InterruptedError: raise
                     except Exception:
                         job['failed']+=1;job['error']='RESOURCE_BLOCKED'
                         row=self.row(media_id)
-                        if action=='virtualize' and row and row['stage'] in ('SHARE_CREATE_UNKNOWN','SOURCE_DELETE_UNKNOWN','SHARE_UNAVAILABLE'):
+                        if action in ('virtualize','virtualize_all') and row and row['stage'] in ('SHARE_CREATE_UNKNOWN','SOURCE_DELETE_UNKNOWN','SHARE_UNAVAILABLE'):
                             self._job(job)
                             break
                     self._job(job)
@@ -305,9 +319,8 @@ class StorageManager:
             self.client.retain_share(row['share_code'])
             fid=self.verify_share(row)
             self.service.query('UPDATE resource_storage SET share_fid=? WHERE media_id=?',(fid,media_id))
-            # Exercise share-to-personal restoration before deletion; its verified
-            # temporary copy also provides a fallback after the original is gone.
-            self.ensure_copy(media_id)
+            # Conversion stores only the verified share mapping and STRM.
+            # Playback creates its temporary copy lazily when needed.
             row=self.row(media_id)
             actual=self.client.stat(media_id)
             if not matches(actual,row,row['parent_id']): raise SafetyError('Source changed before deletion')
@@ -321,7 +334,7 @@ class StorageManager:
             try: self.verify_share(self.row(media_id))
             except Exception:
                 self.service.query("UPDATE resource_storage SET stage='SHARE_UNAVAILABLE' WHERE media_id=?",(media_id,))
-                raise ToolError('Share needs attention; verified temporary copy retained') from None
+                raise ToolError('Share needs attention; batch stopped') from None
 
     def validate_folder(self, copy):
         folder=self.client.stat(copy['folder_cid'])
@@ -413,7 +426,17 @@ class StorageManager:
             # Pure 302 cannot observe when Emby finishes reading the CDN stream.
             # A persistent 24h lease is renewed on every GET/HEAD request.
             self.service.query('UPDATE resource_copies SET lease_until=? WHERE media_id=?',(time.time()+PLAYBACK_GUARD,media_id))
-            return self.client.normal_link(actual.pickcode,ua).url
+            try: return self.client.normal_link(actual.pickcode,ua).url
+            except MissingFile:
+                # The user may remove the copy after stat but before link lookup.
+                # Confirm absence by ID; other failures never trigger a new write.
+                try: self.client.stat(actual.file_id)
+                except MissingFile: pass
+                else: raise SafetyError('Playback link unavailable for existing copy') from None
+                restored=self.ensure_copy(media_id)
+                self.service.query('UPDATE resource_copies SET lease_until=? WHERE media_id=?',(time.time()+PLAYBACK_GUARD,media_id))
+                # One bounded recovery per request, no loop on persistent errors.
+                return self.client.normal_link(restored.pickcode,ua).url
 
     def cleanup(self, job=None):
         job=job or {'done':0,'failed':0,'error':None}

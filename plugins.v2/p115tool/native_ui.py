@@ -40,6 +40,8 @@ def dispatch(plugin,route,payload):
             return service.storage.start('import',{'link':payload['link'],'password':payload['password']})
         if route=='action' and set(payload)=={'action','ids','delete_source'} and payload['action']=='virtualize':
             return service.storage.start('virtualize',{'ids':payload['ids'],'delete_source':payload['delete_source']})
+        if route=='action' and set(payload)=={'action','delete_source'} and payload['action']=='virtualize_all':
+            return service.storage.start('virtualize_all',{'delete_source':payload['delete_source']})
         if route=='action' and set(payload)=={'action','ids'} and payload['action']=='reconcile_storage':
             return service.storage.start('reconcile',{'ids':payload['ids']})
         if route=='action' and payload=={'action':'cleanup_copies'}: return service.storage.start('cleanup')
