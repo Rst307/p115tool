@@ -17,6 +17,7 @@ SAFETY_REASONS={
     'Temporary contents changed':'TEMP_CONTENTS_CHANGED',
     'Temporary contents not uniquely verified':'TEMP_CONTENTS_NOT_UNIQUE',
     'Temporary write outcome unresolved':'TEMP_WRITE_UNRESOLVED',
+    'Temporary recovery cooling down':'TEMP_RECOVERY_COOLDOWN',
     'Temporary transfer outcome unknown':'TEMP_TRANSFER_UNKNOWN',
     'Temporary directory not empty':'TEMP_FOLDER_NOT_EMPTY',
     'Temporary directory not configured':'TEMP_ROOT_NOT_CONFIGURED',

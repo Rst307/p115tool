@@ -1,7 +1,8 @@
 """Two storage types with private share mappings and bounded temporary copies.
 
-All remote writes are checkpointed before submission. Unknown results are only
-reconciled by reads, never resent. No legacy share/cache/delete tasks are resumed.
+All remote writes are checkpointed before submission. Unconfirmed receives may
+recover in an isolated directory after reads; old intents remain archived.
+No legacy share/cache/delete tasks are resumed.
 """
 from contextlib import closing
 import hashlib
@@ -18,6 +19,7 @@ from .strm import classify, safe_parts
 
 UA = 'p115tool-storage-validation'
 PLAYBACK_GUARD = 24 * 3600
+RECEIVE_RECOVERY_COOLDOWN = 30
 
 
 def parse_share(link, password):
@@ -65,6 +67,11 @@ class StorageManager:
                 lease_until REAL NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS resource_job (id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);''')
             db.execute('CREATE TABLE IF NOT EXISTS recycle_purge_intents (id TEXT PRIMARY KEY,file_id TEXT NOT NULL,rid TEXT NOT NULL DEFAULT \'\',stage TEXT NOT NULL)')
+            db.execute('''CREATE TABLE IF NOT EXISTS abandoned_resource_copies (
+                id TEXT PRIMARY KEY,media_id TEXT NOT NULL,root_cid TEXT NOT NULL,
+                folder_name TEXT NOT NULL,folder_cid TEXT NOT NULL,file_id TEXT NOT NULL,
+                stage TEXT NOT NULL,received_at REAL NOT NULL,lease_until REAL NOT NULL,
+                abandoned_at REAL NOT NULL)''')
             db.execute("UPDATE recycle_purge_intents SET stage='UNKNOWN' WHERE stage='PURGING'")
             db.executescript('''CREATE TABLE IF NOT EXISTS actual_inventory (
                 media_id TEXT PRIMARY KEY,path TEXT NOT NULL);
@@ -456,14 +463,22 @@ class StorageManager:
             raise SafetyError('Temporary contents not uniquely verified')
         return candidates[0]
 
-    def create_copy_folder(self, media_id, root):
+    def create_copy_folder(self, media_id, root, abandoned=None):
         if not root: raise SafetyError('Temporary directory not configured')
         if self.client.directory_path(root)=='/': raise SafetyError('Invalid temporary root')
         name='p115tool-'+uuid.uuid4().hex
         # Commit the new identity before creating; an unknown result is never retried.
-        self.service.query("INSERT INTO resource_copies(media_id,root_cid,folder_name,stage) VALUES(?,?,?,'FOLDER_CREATING') "
-            "ON CONFLICT(media_id) DO UPDATE SET root_cid=excluded.root_cid,folder_name=excluded.folder_name,"
-            "folder_cid='',file_id='',received_at=0,lease_until=0,stage='FOLDER_CREATING'",(media_id,root,name))
+        with self.service._lock,closing(sqlite3.connect(self.service.path)) as db,db:
+            # Archive and replace atomically: a crash can never discard the old
+            # unknown intent or leave it eligible for an automatic resubmission.
+            if abandoned is not None:
+                db.execute('INSERT INTO abandoned_resource_copies VALUES(?,?,?,?,?,?,?,?,?,?)',
+                    (uuid.uuid4().hex,media_id,abandoned['root_cid'],abandoned['folder_name'],
+                     abandoned['folder_cid'],abandoned['file_id'],abandoned['stage'],
+                     abandoned['received_at'],abandoned['lease_until'],time.time()))
+            db.execute("INSERT INTO resource_copies(media_id,root_cid,folder_name,stage) VALUES(?,?,?,'FOLDER_CREATING') "
+                "ON CONFLICT(media_id) DO UPDATE SET root_cid=excluded.root_cid,folder_name=excluded.folder_name,"
+                "folder_cid='',file_id='',received_at=0,lease_until=0,stage='FOLDER_CREATING'",(media_id,root,name))
         try: cid=self.client.create_temp_directory(root,name)
         except Exception:
             self.service.query("UPDATE resource_copies SET stage='FOLDER_UNKNOWN' WHERE media_id=?",(media_id,))
@@ -471,27 +486,50 @@ class StorageManager:
         self.service.query("UPDATE resource_copies SET folder_cid=?,stage='EMPTY' WHERE media_id=?",(cid,media_id))
         return self.copy(media_id)
 
-    def ensure_copy(self, media_id):
+    def ensure_copy(self, media_id, recover_unknown=True):
         with self._gate:
             if self.service._stop.is_set(): raise InterruptedError()
             row=self.row(media_id)
             if not row or not row['share_fid']: raise SafetyError('Share mapping unavailable')
             copy=self.copy(media_id)
             if copy and copy['stage']=='RECEIVE_UNKNOWN':
-                # A late successful receive may already be present. Adopt only
-                # a uniquely identified live copy; never send the write again.
+                # Prefer a late successful receive. Only a verified empty or
+                # missing old directory permits an isolated new attempt.
                 try:
-                    candidate=self.locate_copy(row,copy)
-                    actual=self.client.stat(candidate.file_id)
-                    if actual.file_id!=candidate.file_id or not matches(actual,row,copy['folder_cid']) or not actual.pickcode:
-                        raise SafetyError('Temporary identity changed')
+                    try: self.validate_folder(copy)
+                    except MissingFile: files=[]
+                    else: files=list(self.client.list_files(copy['folder_cid']))
+                    if not files:
+                        if not recover_unknown: raise SafetyError('Temporary write outcome unresolved')
+                        recent=self.service.query('SELECT max(abandoned_at) at FROM abandoned_resource_copies WHERE media_id=?',(media_id,),one=True)
+                        if recent['at'] is not None and time.time()-recent['at']<RECEIVE_RECOVERY_COOLDOWN:
+                            raise SafetyError('Temporary recovery cooling down')
+                        if self.verify_share(row)!=row['share_fid']:
+                            raise SafetyError('Share mapping changed')
+                        # Recheck after share validation, which may take time.
+                        try: self.validate_folder(copy)
+                        except MissingFile: pass
+                        else:
+                            if list(self.client.list_files(copy['folder_cid'])):
+                                raise SafetyError('Temporary contents changed')
+                        if self.service._stop.is_set(): raise InterruptedError()
+                        self.create_copy_folder(media_id,copy['root_cid'],abandoned=copy)
+                    else:
+                        if len(files)!=1 or not matches(files[0],row,copy['folder_cid']) or not files[0].pickcode:
+                            raise SafetyError('Temporary contents not uniquely verified')
+                        candidate=files[0]
+                        actual=self.client.stat(candidate.file_id)
+                        if actual.file_id!=candidate.file_id or not matches(actual,row,copy['folder_cid']) or not actual.pickcode:
+                            raise SafetyError('Temporary identity changed')
                 except Exception as exc:
                     if self.service._stop.is_set(): raise InterruptedError() from None
-                    error=SafetyError('Temporary write outcome unresolved')
-                    error.copy_state='RECEIVE_UNKNOWN'
+                    error=SafetyError('Temporary recovery cooling down' if exc.args==('Temporary recovery cooling down',)
+                                      else 'Temporary write outcome unresolved')
+                    error.copy_state=self.copy(media_id)['stage']
                     for key in ('operation','sdk_error','upstream_code'):
                         if hasattr(exc,key):setattr(error,key,getattr(exc,key))
                     raise error from None
+                if not files: return self.ensure_copy(media_id,recover_unknown=False)
                 self.service.query("UPDATE resource_copies SET file_id=?,stage='READY',received_at=? WHERE media_id=?",(actual.file_id,time.time(),media_id))
                 return actual
             if copy and copy['stage']=='READY':
@@ -507,11 +545,11 @@ class StorageManager:
                 try: self.validate_folder(copy)
                 except MissingFile:
                     self.create_copy_folder(media_id,copy['root_cid'])
-                    return self.ensure_copy(media_id)
+                    return self.ensure_copy(media_id,recover_unknown=recover_unknown)
                 contents=list(self.client.list_files(copy['folder_cid']))
                 if not contents:
                     self.service.query("UPDATE resource_copies SET stage='EMPTY',file_id='',received_at=0,lease_until=0 WHERE media_id=?",(media_id,))
-                    return self.ensure_copy(media_id)
+                    return self.ensure_copy(media_id,recover_unknown=recover_unknown)
                 if read_error is not None: raise read_error
                 members=[f for f in contents if f.file_id==copy['file_id']]
                 if actual is None or len(members)!=1 or not matches(members[0],row,copy['folder_cid']):
@@ -549,7 +587,7 @@ class StorageManager:
                     if hasattr(exc,key):setattr(error,key,getattr(exc,key))
                 raise error from None
             self.service.query("UPDATE resource_copies SET stage='RECEIVED' WHERE media_id=?",(media_id,))
-            return self.ensure_copy(media_id)
+            return self.ensure_copy(media_id,recover_unknown=False)
 
     def play(self, media_id, ua):
         if self.service._stop.is_set(): raise ToolError('Service stopped')
@@ -572,7 +610,7 @@ class StorageManager:
                 # The user may remove the copy after stat but before link lookup.
                 # SDK download errors need not use the MissingFile subclass.
                 # Recheck live membership; an existing copy is never re-received.
-                restored=self.ensure_copy(media_id)
+                restored=self.ensure_copy(media_id,recover_unknown=False)
                 if restored.file_id==actual.file_id:
                     if isinstance(exc,MissingFile):
                         raise SafetyError('Playback link unavailable for existing copy') from None
@@ -696,7 +734,9 @@ class StorageManager:
 
     def skip_directory(self, cid):
         return cid==self.config.temp_cid or bool(self.service.query(
-            'SELECT media_id FROM resource_copies WHERE root_cid=? OR folder_cid=? LIMIT 1',(cid,cid),one=True))
+            'SELECT media_id FROM resource_copies WHERE root_cid=? OR folder_cid=? '
+            'UNION ALL SELECT media_id FROM abandoned_resource_copies WHERE root_cid=? OR folder_cid=? LIMIT 1',
+            (cid,cid,cid,cid),one=True))
 
     def close(self):
         with self.service._lock:
