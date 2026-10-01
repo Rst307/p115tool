@@ -420,6 +420,23 @@ class StorageManager:
             row=self.row(media_id)
             if not row or not row['share_fid']: raise SafetyError('Share mapping unavailable')
             copy=self.copy(media_id)
+            if copy and copy['stage']=='RECEIVE_UNKNOWN':
+                # A late successful receive may already be present. Adopt only
+                # a uniquely identified live copy; never send the write again.
+                try:
+                    candidate=self.locate_copy(row,copy)
+                    actual=self.client.stat(candidate.file_id)
+                    if actual.file_id!=candidate.file_id or not matches(actual,row,copy['folder_cid']) or not actual.pickcode:
+                        raise SafetyError('Temporary identity changed')
+                except Exception as exc:
+                    if self.service._stop.is_set(): raise InterruptedError() from None
+                    error=SafetyError('Temporary write outcome unresolved')
+                    error.copy_state='RECEIVE_UNKNOWN'
+                    for key in ('operation','sdk_error','upstream_code'):
+                        if hasattr(exc,key):setattr(error,key,getattr(exc,key))
+                    raise error from None
+                self.service.query("UPDATE resource_copies SET file_id=?,stage='READY',received_at=? WHERE media_id=?",(actual.file_id,time.time(),media_id))
+                return actual
             if copy and copy['stage']=='READY':
                 actual=None;read_error=None
                 try: actual=self.client.stat(copy['file_id'])
@@ -465,9 +482,15 @@ class StorageManager:
             if self.service._stop.is_set(): raise InterruptedError()
             self.service.query("UPDATE resource_copies SET stage='RECEIVING' WHERE media_id=?",(media_id,))
             try: self.client.receive_to_temp(row['share_code'],row['password'],row['share_fid'],copy['folder_cid'])
-            except Exception:
+            except Exception as exc:
                 self.service.query("UPDATE resource_copies SET stage='RECEIVE_UNKNOWN' WHERE media_id=?",(media_id,))
-                raise ToolError('Temporary transfer outcome unknown') from None
+                error=ToolError('Temporary transfer outcome unknown')
+                error.copy_state='RECEIVE_UNKNOWN'
+                # Preserve only diagnostic attributes; log_failure allowlists
+                # their values and never emits the SDK payload or exception text.
+                for key in ('operation','sdk_error','upstream_code'):
+                    if hasattr(exc,key):setattr(error,key,getattr(exc,key))
+                raise error from None
             self.service.query("UPDATE resource_copies SET stage='RECEIVED' WHERE media_id=?",(media_id,))
             return self.ensure_copy(media_id)
 

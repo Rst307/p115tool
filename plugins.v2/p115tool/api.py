@@ -1,7 +1,7 @@
 from fastapi import Request, HTTPException
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response
-from .models import MissingFile, SafetyError, ToolError
+from .models import MissingFile, ToolError
 import re
 try:
     from app.log import logger
@@ -17,6 +17,7 @@ SAFETY_REASONS={
     'Temporary contents changed':'TEMP_CONTENTS_CHANGED',
     'Temporary contents not uniquely verified':'TEMP_CONTENTS_NOT_UNIQUE',
     'Temporary write outcome unresolved':'TEMP_WRITE_UNRESOLVED',
+    'Temporary transfer outcome unknown':'TEMP_TRANSFER_UNKNOWN',
     'Temporary directory not empty':'TEMP_FOLDER_NOT_EMPTY',
     'Temporary directory not configured':'TEMP_ROOT_NOT_CONFIGURED',
     'Invalid temporary root':'TEMP_ROOT_INVALID',
@@ -45,7 +46,7 @@ def log_failure(exc):
     operation=operation if isinstance(operation,str) and operation in allowed else 'unknown'
     sdk_error=getattr(exc,'sdk_error','none')
     sdk_error=sdk_error if isinstance(sdk_error,str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,80}',sdk_error) else 'unknown'
-    message=exc.args[0] if isinstance(exc,SafetyError) and exc.args else None
+    message=exc.args[0] if isinstance(exc,ToolError) and exc.args else None
     reason=SAFETY_REASONS.get(message,'unknown') if type(message) is str else 'unknown'
     copy_state=getattr(exc,'copy_state',None)
     copy_state=copy_state if type(copy_state) is str and copy_state in {
