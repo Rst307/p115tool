@@ -273,6 +273,30 @@ class P115ClientManager:
         # Only callers holding a persisted intent and verified file identity use this.
         check_response(self.call('fs_delete', fid))
 
+    def recycle_entries(self):
+        """Complete bounded enumeration; never infer an entry ID from a file ID."""
+        entries=[]; seen=set(); offset=0
+        while True:
+            response=check_response(self.call('recyclebin_list',{'offset':offset,'limit':1000}))
+            rows=response.get('data'); count=response.get('count')
+            if isinstance(rows,dict): count=rows.get('count');rows=rows.get('list')
+            if not isinstance(rows,list) or type(count) not in (int,str) or not str(count).isdigit() or int(count)>100000:
+                raise SafetyError('Unsupported recycle listing')
+            for row in rows:
+                if not isinstance(row,dict): raise SafetyError('Unsupported recycle entry')
+                rid=str(row.get('rid') or row.get('id') or '')
+                if not re.fullmatch(r'[1-9][0-9]{0,19}',rid) or rid in seen:
+                    raise SafetyError('Invalid recycle entry identity')
+                seen.add(rid);entries.append({**row,'rid':rid})
+            offset+=len(rows)
+            if offset==int(count): return entries
+            if not rows or offset>int(count): raise SafetyError('Incomplete recycle listing')
+
+    def purge_recycle_entry(self, rid):
+        if not isinstance(rid,str) or not re.fullmatch(r'[1-9][0-9]{0,19}',rid):
+            raise SafetyError('Invalid recycle deletion target')
+        check_response(self.call('recyclebin_clean',{'tid':rid},password=self.config.recycle_password))
+
     def probe_range(self, link, ua, size):
         from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
         class NoRedirect(HTTPRedirectHandler):

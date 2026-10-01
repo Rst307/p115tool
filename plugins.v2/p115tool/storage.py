@@ -64,6 +64,8 @@ class StorageManager:
                 stage TEXT NOT NULL,received_at REAL NOT NULL DEFAULT 0,
                 lease_until REAL NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS resource_job (id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);''')
+            db.execute('CREATE TABLE IF NOT EXISTS recycle_purge_intents (id TEXT PRIMARY KEY,file_id TEXT NOT NULL,rid TEXT NOT NULL DEFAULT \'\',stage TEXT NOT NULL)')
+            db.execute("UPDATE recycle_purge_intents SET stage='UNKNOWN' WHERE stage='PURGING'")
             db.executescript('''CREATE TABLE IF NOT EXISTS actual_inventory (
                 media_id TEXT PRIMARY KEY,path TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS actual_inventory_state (
@@ -111,6 +113,8 @@ class StorageManager:
             item['expires_at']=(item.pop('received_at') or 0)+self.config.temp_days*86400 if item['copy_state']=='READY' else None
         return {'items':items,'total':total,'page':page,'job':self.job(),'busy':self.busy,
                 'temp_days':self.config.temp_days,'cleanup_enabled':self.config.temp_cleanup,
+                'recycle_purge_enabled':self.config.recycle_purge,
+                'recycle_purge_blocked':bool(self.service.query("SELECT id FROM recycle_purge_intents WHERE stage!='DONE' LIMIT 1",one=True)),
                 'temp_configured':bool(self.config.temp_cid),'sources_configured':bool(self.config.source_cids),
                 'scanned_at':snapshot['scanned_at'] if current else None,
                 'queued':self._pending_action is not None}
@@ -267,6 +271,8 @@ class StorageManager:
                     except InterruptedError: raise
                     except Exception:
                         job['failed']+=1;job['error']='RESOURCE_BLOCKED'
+                        if self.config.recycle_purge and self.service.query("SELECT id FROM recycle_purge_intents WHERE stage!='DONE' LIMIT 1",one=True):
+                            job['error']='RECYCLE_PURGE_BLOCKED';self._job(job);break
                         row=self.row(media_id)
                         if action in ('virtualize','virtualize_all') and row and row['stage'] in ('SHARE_CREATE_UNKNOWN','SOURCE_DELETE_UNKNOWN','SHARE_UNAVAILABLE'):
                             self._job(job)
@@ -341,6 +347,8 @@ class StorageManager:
             if self.service._stop.is_set(): raise InterruptedError()
             row=self.row(media_id)
             if row and row['kind']=='VIRTUAL': return
+            if self.config.recycle_purge and self.service.query("SELECT id FROM recycle_purge_intents WHERE stage!='DONE' LIMIT 1",one=True):
+                raise SafetyError('Recycle purge needs attention')
             if row and row['stage'] in ('SHARE_CREATE_UNKNOWN','SOURCE_DELETE_UNKNOWN','SHARE_CREATING','SOURCE_DELETING'):
                 raise SafetyError('Unresolved write checkpoint')
             source=self.service.query('SELECT * FROM strm_files WHERE file_id=?',(media_id,),one=True)
@@ -366,6 +374,11 @@ class StorageManager:
             actual=self.client.stat(media_id)
             if not matches(actual,row,row['parent_id']): raise SafetyError('Source changed before deletion')
             if self.service._stop.is_set(): raise InterruptedError()
+            purge=self.prepare_purge(actual)
+            if purge is not None:
+                current=self.client.stat(media_id)
+                if not matches(current,row,row['parent_id']): raise SafetyError('Source changed before deletion')
+                if self.service._stop.is_set(): raise InterruptedError()
             self.service.query("UPDATE resource_storage SET stage='SOURCE_DELETING' WHERE media_id=?",(media_id,))
             try:
                 self.client.delete_verified_file(media_id)
@@ -378,6 +391,50 @@ class StorageManager:
             except Exception:
                 self.service.query("UPDATE resource_storage SET stage='SHARE_UNAVAILABLE' WHERE media_id=?",(media_id,))
                 raise ToolError('Share needs attention; batch stopped') from None
+            self.finish_purge(actual,purge)
+            if purge is not None:
+                try: self.verify_share(self.row(media_id))
+                except Exception:
+                    self.service.query("UPDATE resource_storage SET stage='SHARE_UNAVAILABLE' WHERE media_id=?",(media_id,))
+                    raise ToolError('Share needs attention; batch stopped') from None
+
+    def prepare_purge(self, file):
+        if not self.config.recycle_purge: return None
+        if self.service.query("SELECT id FROM recycle_purge_intents WHERE stage!='DONE' LIMIT 1",one=True):
+            raise SafetyError('Recycle purge needs attention')
+        entries=self.client.recycle_entries()
+        intent=uuid.uuid4().hex
+        self.service.query("INSERT INTO recycle_purge_intents(id,file_id,stage) VALUES(?,?,'PREPARED')",(intent,file.file_id))
+        return intent,{row['rid'] for row in entries}
+
+    def finish_purge(self, file, prepared):
+        if prepared is None: return
+        intent,before=prepared
+        try:
+            entries=self.client.recycle_entries()
+            candidates=[]
+            for entry in entries:
+                # Explicit original file ID plus content identity are mandatory.
+                # Unknown metadata layouts are blocked, never guessed by name.
+                fid=str(entry.get('file_id') or entry.get('fid') or '')
+                name=entry.get('file_name',entry.get('name',entry.get('n')))
+                size=entry.get('file_size',entry.get('size',entry.get('s')))
+                sha=entry.get('sha1',entry.get('sha',entry.get('file_sha1','')))
+                if (entry['rid'] not in before and fid==file.file_id and name==file.name
+                        and type(size) in (str,int) and str(size)==str(file.size)
+                        and isinstance(sha,str) and bool(file.sha1) and sha.upper()==file.sha1):
+                    candidates.append(entry['rid'])
+            if len(candidates)!=1: raise SafetyError('Recycle file not uniquely verified')
+            rid=candidates[0]
+            if self.service._stop.is_set(): raise InterruptedError()
+            self.service.query("UPDATE recycle_purge_intents SET rid=?,stage='PURGING' WHERE id=?",(rid,intent))
+            self.client.purge_recycle_entry(rid)
+            if any(row['rid']==rid for row in self.client.recycle_entries()):
+                raise SafetyError('Recycle purge outcome unconfirmed')
+            self.service.query("UPDATE recycle_purge_intents SET stage='DONE' WHERE id=?",(intent,))
+        except Exception:
+            self.service.query("UPDATE recycle_purge_intents SET stage='UNKNOWN' WHERE id=?",(intent,))
+            raise ToolError('Recycle purge needs attention; batch stopped') from None
 
     def validate_folder(self, copy):
         folder=self.client.stat(copy['folder_cid'])
@@ -547,6 +604,13 @@ class StorageManager:
                     final=self.client.stat(actual.file_id)
                     if not matches(final,row,copy['folder_cid']): raise SafetyError('Temporary file changed before deletion')
                     if self.service._stop.is_set(): raise InterruptedError()
+                    purge=self.prepare_purge(final)
+                    if purge is not None:
+                        current=self.locate_copy(row,copy)
+                        final=self.client.stat(actual.file_id)
+                        if current.file_id!=actual.file_id or not matches(final,row,copy['folder_cid']):
+                            raise SafetyError('Temporary file changed before deletion')
+                        if self.service._stop.is_set(): raise InterruptedError()
                     self.service.query("UPDATE resource_copies SET stage='DELETING' WHERE media_id=?",(copy['media_id'],))
                     try:
                         self.client.delete_verified_file(actual.file_id)
@@ -555,12 +619,17 @@ class StorageManager:
                         self.service.query("UPDATE resource_copies SET stage='DELETE_UNKNOWN' WHERE media_id=?",(copy['media_id'],))
                         raise ToolError('Cleanup outcome unknown') from None
                     self.service.query("UPDATE resource_copies SET stage='EMPTY',file_id='',received_at=0,lease_until=0 WHERE media_id=?",(copy['media_id'],))
+                    self.finish_purge(final,purge)
                     job['done']+=1
                 except Exception:
                     job['failed']+=1;job['error']='CLEANUP_BLOCKED'
                 if 'action' in job: self._job(job)
                 current=self.copy(copy['media_id'])
                 if current and current['stage'] in ('DELETING','DELETE_UNKNOWN'): break
+                if self.config.recycle_purge and self.service.query("SELECT id FROM recycle_purge_intents WHERE stage!='DONE' LIMIT 1",one=True):
+                    job['error']='RECYCLE_PURGE_BLOCKED'
+                    if 'action' in job: self._job(job)
+                    break
         return job
 
     def reconcile(self, media_id):
