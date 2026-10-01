@@ -50,6 +50,8 @@ class StorageManager:
     def __init__(self, service):
         self.service=service; self.client=service.client; self.config=service.config
         self._gate=threading.RLock(); self._thread=None
+        self._pending_action=None; self._refresh_pending=False
+        self._refresh_timer=None; self._refresh_revision=0
         with closing(sqlite3.connect(service.path)) as db,db:
             db.executescript('''CREATE TABLE IF NOT EXISTS resource_storage (
                 media_id TEXT PRIMARY KEY,kind TEXT NOT NULL,stage TEXT NOT NULL,
@@ -110,7 +112,36 @@ class StorageManager:
         return {'items':items,'total':total,'page':page,'job':self.job(),'busy':self.busy,
                 'temp_days':self.config.temp_days,'cleanup_enabled':self.config.temp_cleanup,
                 'temp_configured':bool(self.config.temp_cid),'sources_configured':bool(self.config.source_cids),
-                'scanned_at':snapshot['scanned_at'] if current else None}
+                'scanned_at':snapshot['scanned_at'] if current else None,
+                'queued':self._pending_action is not None}
+
+    def request_refresh(self, after_transfer=False):
+        with self.service._lock:
+            if self.service._closed or not self.config.source_cids: return
+            if after_transfer:
+                self._refresh_revision+=1
+                if self._refresh_timer: self._refresh_timer.cancel()
+                self._refresh_timer=threading.Timer(10,self._refresh_after_transfer,args=(self._refresh_revision,))
+                self._refresh_timer.daemon=True; self._refresh_timer.start()
+                return
+            if self.busy and self.job()['action']=='scan': return
+            self._refresh_pending=True
+            self.drain_pending()
+
+    def _refresh_after_transfer(self, revision):
+        with self.service._lock:
+            if self.service._closed or revision!=self._refresh_revision: return
+            self._refresh_timer=None
+            self.request_refresh()
+
+    def drain_pending(self):
+        # Called under the service lock, only when the previous worker has yielded.
+        if self.service._closed or self.busy or (self.service._worker and self.service._worker.is_alive()): return
+        if self._pending_action:
+            action,payload=self._pending_action; self._pending_action=None
+            self.start(action,payload)
+        elif self._refresh_pending:
+            self._refresh_pending=False; self.start('scan')
 
     def inventory_scope(self):
         return json.dumps([sorted(s['cid'] for s in self.config.source_cids),self.config.temp_cid])
@@ -147,14 +178,17 @@ class StorageManager:
             destination=previous['relative_path'] if previous else classify('/',path.lstrip('/'),
                 **({'recognizer':self.service.recognizer} if self.service.recognizer else {}))
             self.service.register(file,destination)
+        self.publish_inventory([(f.file_id,p) for f,p in files])
+        job['done']=len(files)
+
+    def publish_inventory(self, files):
         with self.service._lock:
             if self.service._stop.is_set(): raise InterruptedError()
             with closing(sqlite3.connect(self.service.path)) as db,db:
                 db.execute('DELETE FROM actual_inventory')
-                db.executemany('INSERT INTO actual_inventory VALUES(?,?)',[(f.file_id,p) for f,p in files])
+                db.executemany('INSERT INTO actual_inventory VALUES(?,?)',files)
                 db.execute('INSERT INTO actual_inventory_state VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET scope=excluded.scope,scanned_at=excluded.scanned_at',
                     (self.inventory_scope(),time.time()))
-        job['done']=len(files)
 
     def _selection(self, ids):
         if (not isinstance(ids,list) or not ids or len(ids)>100
@@ -192,7 +226,13 @@ class StorageManager:
         else: raise ValueError('Unknown storage action')
         with self.service._lock:
             if self.service._closed: raise ToolError('Service stopped')
-            if self.busy or (self.service._worker and self.service._worker.is_alive()): return {'state':'BUSY'}
+            if self.busy:
+                if self.job()['action']=='scan' and action!='scan' and self._pending_action is None:
+                    # Keep one explicit submission in memory, never replay on restart.
+                    self._pending_action=(action,{**payload,**({'ids':list(payload['ids'])} if 'ids' in payload else {})})
+                    return {'state':'QUEUED'}
+                return {'state':'BUSY'}
+            if self.service._worker and self.service._worker.is_alive(): return {'state':'BUSY'}
             self._job({'state':'RUNNING','action':action,'done':0,'failed':0,'error':None})
             self._thread=threading.Thread(target=self._run,args=(action,args),name='p115tool-storage',daemon=True)
             try: self._thread.start()
@@ -238,11 +278,12 @@ class StorageManager:
         finally:
             self._job(job)
             with self.service._lock:
+                self._thread=None
                 if self.service._rerun and not self.service._closed:
-                    self._thread=None
                     self.service._rerun=False
                     try: self.service.start()
                     except Exception: pass
+                self.drain_pending()
 
     def share_tree(self, code, password):
         stack=[('0','')]; seen=set(); files=[]
@@ -326,7 +367,9 @@ class StorageManager:
             if not matches(actual,row,row['parent_id']): raise SafetyError('Source changed before deletion')
             if self.service._stop.is_set(): raise InterruptedError()
             self.service.query("UPDATE resource_storage SET stage='SOURCE_DELETING' WHERE media_id=?",(media_id,))
-            try: self.client.delete_verified_file(media_id)
+            try:
+                self.client.delete_verified_file(media_id)
+                self.confirm_absent(media_id)
             except Exception:
                 self.service.query("UPDATE resource_storage SET stage='SOURCE_DELETE_UNKNOWN' WHERE media_id=?",(media_id,))
                 raise ToolError('Source deletion outcome unknown') from None
@@ -341,6 +384,12 @@ class StorageManager:
         if not folder.is_dir or folder.parent_id!=copy['root_cid'] or folder.name!=copy['folder_name']:
             raise SafetyError('Temporary directory identity changed')
         return folder
+
+    def confirm_absent(self, file_id):
+        # One read after a write; an uncertain result stays checkpointed.
+        try: self.client.stat(file_id)
+        except MissingFile: return
+        raise SafetyError('Deleted file still present')
 
     def locate_copy(self, row, copy):
         self.validate_folder(copy)
@@ -462,7 +511,9 @@ class StorageManager:
                     if not matches(final,row,copy['folder_cid']): raise SafetyError('Temporary file changed before deletion')
                     if self.service._stop.is_set(): raise InterruptedError()
                     self.service.query("UPDATE resource_copies SET stage='DELETING' WHERE media_id=?",(copy['media_id'],))
-                    try: self.client.delete_verified_file(actual.file_id)
+                    try:
+                        self.client.delete_verified_file(actual.file_id)
+                        self.confirm_absent(actual.file_id)
                     except Exception:
                         self.service.query("UPDATE resource_copies SET stage='DELETE_UNKNOWN' WHERE media_id=?",(copy['media_id'],))
                         raise ToolError('Cleanup outcome unknown') from None
@@ -479,7 +530,15 @@ class StorageManager:
         """Explicit read-only reconciliation. No write SDK methods are called."""
         with self._gate:
             row=self.row(media_id)
-            if not row: return
+            if not row:
+                source=self.service.query('SELECT * FROM strm_files WHERE file_id=?',(media_id,),one=True)
+                if not source: return
+                try: actual=self.client.stat(media_id)
+                except MissingFile:
+                    self.service.query('DELETE FROM actual_inventory WHERE media_id=?',(media_id,))
+                    return
+                if not matches(actual,source,source['parent_id']): raise SafetyError('Source changed')
+                return
             if row['stage']=='SHARE_CREATE_UNKNOWN': raise SafetyError('Find and attach the existing share manually')
             if row['stage']=='SOURCE_DELETE_UNKNOWN':
                 try:
@@ -489,7 +548,13 @@ class StorageManager:
                 except MissingFile:
                     self.service.query("UPDATE resource_storage SET kind='VIRTUAL',source_deleted=1,stage='READY' WHERE media_id=?",(media_id,))
             copy=self.copy(media_id)
-            if copy and copy['stage']=='FOLDER_UNKNOWN':
+            if copy and copy['stage']=='READY':
+                try: actual=self.client.stat(copy['file_id'])
+                except MissingFile:
+                    self.service.query("UPDATE resource_copies SET stage='EMPTY',file_id='',received_at=0,lease_until=0 WHERE media_id=?",(media_id,))
+                else:
+                    if not matches(actual,row,copy['folder_cid']): raise SafetyError('Copy changed')
+            elif copy and copy['stage']=='FOLDER_UNKNOWN':
                 folders=[f for f in self.client.list_files(copy['root_cid']) if f.is_dir and f.name==copy['folder_name'] and f.parent_id==copy['root_cid']]
                 if len(folders)!=1: raise SafetyError('Temporary directory cannot be identified')
                 self.service.query("UPDATE resource_copies SET folder_cid=?,stage='EMPTY' WHERE media_id=?",(folders[0].file_id,media_id))
@@ -528,5 +593,9 @@ class StorageManager:
             'SELECT media_id FROM resource_copies WHERE root_cid=? OR folder_cid=? LIMIT 1',(cid,cid),one=True))
 
     def close(self):
+        with self.service._lock:
+            self._refresh_revision+=1
+            if self._refresh_timer: self._refresh_timer.cancel(); self._refresh_timer=None
+            self._pending_action=None; self._refresh_pending=False
         if self._thread and self._thread is not threading.current_thread(): self._thread.join()
         with self._gate: pass

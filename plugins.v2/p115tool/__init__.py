@@ -22,7 +22,7 @@ class P115Tool(_PluginBase):
     plugin_name='115 工具箱'
     plugin_desc='实际与虚拟存储、分享临时转存、分类STRM及302播放'
     plugin_icon='https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png'
-    plugin_version='0.2.18'
+    plugin_version='0.2.19'
     plugin_author='Rst307'
     author_url='https://github.com/Rst307'
     plugin_config_prefix='p115tool_'
@@ -73,6 +73,10 @@ class P115Tool(_PluginBase):
         if not self.get_state(): return []
         from apscheduler.triggers.cron import CronTrigger
         jobs=[]
+        if self._config.source_cids:
+            jobs.append({'id':'p115tool_storage_refresh','name':'115存储30分钟刷新',
+                         'trigger':CronTrigger(minute='*/30',timezone='Asia/Shanghai'),
+                         'func':self.run_storage_refresh,'kwargs':{}})
         for enabled,time,job_id,name,func in (
             (self._config.scheduled,self._config.scan_time,'p115tool_strm','115分类STRM生成',self.run_generate),
             (self._config.organize_scheduled and bool(self._config.organize_cids),self._config.organize_time,'p115tool_organize','115 MoviePilot定时整理',self.run_organize)):
@@ -84,6 +88,11 @@ class P115Tool(_PluginBase):
                          'trigger':CronTrigger(minute=15,timezone='Asia/Shanghai'),
                          'func':self.run_cleanup,'kwargs':{}})
         return jobs
+    def run_storage_refresh(self):
+        with self._lifecycle:
+            if self._service:
+                try: self._service.storage.request_refresh()
+                except Exception: logger.warning('115存储刷新未启动，请检查插件状态。')
     def run_cleanup(self):
         with self._lifecycle:
             if self._service and self._config.temp_cleanup and self._config.temp_cid:
@@ -118,7 +127,7 @@ class P115Tool(_PluginBase):
     def on_transfer_complete(self,event):
         # Never retain or log host payloads: they may contain private URLs.
         with self._lifecycle:
-            if not self._service or not self._config.auto_after_transfer: return
+            if not self._service: return
             try:
                 data=getattr(event,'event_data',None)
                 if not isinstance(data,dict): return
@@ -127,7 +136,8 @@ class P115Tool(_PluginBase):
                 if value(info,'success') is not True: return
                 target=value(info,'target_item') or value(info,'target_diritem')
                 if value(target,'storage')!='u115': return
-                self._service.request_auto_generate()
+                if self._config.auto_after_transfer: self._service.request_auto_generate()
+                else: self._service.storage.request_refresh(after_transfer=True)
             except Exception:
                 logger.warning('115整理后自动生成未启动，请检查STRM源目录配置。')
     def stop_service(self):

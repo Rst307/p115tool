@@ -120,13 +120,14 @@ class Service:
             with self._lock:
                 if self._closed or not self._rerun:
                     self._worker=None
+                    self.storage.drain_pending()
                     return
                 self._rerun=False
 
     def generate_all(self):
         state={'state':'RUNNING','found':0,'generated':0,'failed':0,'error':None}
         self._save_state(state)
-        seen_files=set(); seen_dirs=set(); outputs={}
+        seen_files=set(); seen_dirs=set(); outputs={}; inventory=[]
         state['relocated']=0
         state['paths']=[]
         try:
@@ -164,6 +165,7 @@ class Service:
                             if not file.pickcode: raise SafetyError('Missing pickcode')
                             destination=classify('/' if actual_path else prefix,actual_path.lstrip('/') if actual_path else path,**({'recognizer':self.recognizer} if self.recognizer else {}))
                             token=self.register(file,destination)
+                            inventory.append((file.file_id,actual_path or prefix.rstrip('/')+'/'+path))
                             output=self.write_output(file.file_id,destination,token,state)
                             outputs[self.config.playback_url(token)+'\n']=(file.file_id,output,token)
                             if len(state['paths'])<10:
@@ -186,6 +188,7 @@ class Service:
                 self._save_state(state)
             state['state']='DONE' if not state['failed'] else 'PARTIAL'
             if state['state']=='DONE':
+                self.storage.publish_inventory(inventory)
                 # Earlier versions updated strm_path but left their old output
                 # behind. Only exact stable-URL duplicates of files successfully
                 # generated this round, with the same filename, are candidates.
