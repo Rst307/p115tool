@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from urllib.parse import urlsplit, parse_qs
-from .models import RemoteFile, MissingFile, SafetyError, ToolError
+from .models import RemoteFile, MissingFile, RemoteError, SafetyError, ToolError
 from .strm import classify, safe_parts
 
 UA = 'p115tool-storage-validation'
@@ -421,17 +421,27 @@ class StorageManager:
             if not row or not row['share_fid']: raise SafetyError('Share mapping unavailable')
             copy=self.copy(media_id)
             if copy and copy['stage']=='READY':
+                actual=None;read_error=None
                 try: actual=self.client.stat(copy['file_id'])
+                except MissingFile: pass
+                except RemoteError as exc: read_error=exc
+                if actual is not None and not matches(actual,row,copy['folder_cid']):
+                    raise SafetyError('Temporary identity changed')
+                # get_info can still return metadata for permanently deleted
+                # files. Verify live membership in the recorded directory too.
+                # A failed detail read alone never authorizes another receive.
+                try: self.validate_folder(copy)
                 except MissingFile:
-                    try: self.validate_folder(copy)
-                    except MissingFile:
-                        self.create_copy_folder(media_id,copy['root_cid'])
-                        return self.ensure_copy(media_id)
-                    if list(self.client.list_files(copy['folder_cid'])): raise SafetyError('Temporary contents changed')
+                    self.create_copy_folder(media_id,copy['root_cid'])
+                    return self.ensure_copy(media_id)
+                contents=list(self.client.list_files(copy['folder_cid']))
+                if not contents:
                     self.service.query("UPDATE resource_copies SET stage='EMPTY',file_id='',received_at=0,lease_until=0 WHERE media_id=?",(media_id,))
                     return self.ensure_copy(media_id)
-                if not matches(actual,row,copy['folder_cid']): raise SafetyError('Temporary identity changed')
-                self.validate_folder(copy)
+                if read_error is not None: raise read_error
+                members=[f for f in contents if f.file_id==copy['file_id']]
+                if actual is None or len(members)!=1 or not matches(members[0],row,copy['folder_cid']):
+                    raise SafetyError('Temporary contents changed')
                 return actual
             if copy and copy['stage'] in ('FOLDER_UNKNOWN','RECEIVE_UNKNOWN','DELETE_UNKNOWN','FOLDER_CREATING','RECEIVING','DELETING'):
                 raise SafetyError('Temporary write outcome unresolved')
@@ -476,13 +486,15 @@ class StorageManager:
             # A persistent 24h lease is renewed on every GET/HEAD request.
             self.service.query('UPDATE resource_copies SET lease_until=? WHERE media_id=?',(time.time()+PLAYBACK_GUARD,media_id))
             try: return self.client.normal_link(actual.pickcode,ua).url
-            except MissingFile:
+            except RemoteError as exc:
                 # The user may remove the copy after stat but before link lookup.
-                # Confirm absence by ID; other failures never trigger a new write.
-                try: self.client.stat(actual.file_id)
-                except MissingFile: pass
-                else: raise SafetyError('Playback link unavailable for existing copy') from None
+                # SDK download errors need not use the MissingFile subclass.
+                # Recheck live membership; an existing copy is never re-received.
                 restored=self.ensure_copy(media_id)
+                if restored.file_id==actual.file_id:
+                    if isinstance(exc,MissingFile):
+                        raise SafetyError('Playback link unavailable for existing copy') from None
+                    raise
                 self.service.query('UPDATE resource_copies SET lease_until=? WHERE media_id=?',(time.time()+PLAYBACK_GUARD,media_id))
                 # One bounded recovery per request, no loop on persistent errors.
                 return self.client.normal_link(restored.pickcode,ua).url
