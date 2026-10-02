@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import hashlib
 import logging
+import time
 from urllib.parse import urlsplit
 from .client import P115ClientManager
 from .models import SafetyError, MissingFile, ToolError
@@ -18,6 +19,7 @@ class Service:
         self.client=client or P115ClientManager(config)
         self._lock=threading.RLock(); self._stop=threading.Event(); self._worker=None
         self._closed=False; self.recognizer=recognizer
+        self._db=None
         from .virtual_organize import organize_virtual
         self.virtual_organizer=virtual_organizer or organize_virtual
         self._auto_timer=None; self._auto_revision=0; self._rerun=False
@@ -60,15 +62,23 @@ class Service:
             from .storage import StorageManager
             self.storage=StorageManager(self)
         except Exception:
+            if self._db is not None: self._db.close()
             self.client.close(); self._file_lock.close(); raise
 
     def query(self,sql,args=(),one=False):
-        with self._lock,closing(sqlite3.connect(self.path)) as db,db:
-            db.row_factory=sqlite3.Row
-            cursor=db.execute(sql,args)
-            if cursor.description:
-                rows=[dict(r) for r in cursor.fetchall()]
-                return (rows[0] if rows else None) if one else rows
+        # All callers (workers, playback and status) share the service lock.
+        # Keep each write durable before returning, but reuse the connection and
+        # its prepared-statement cache rather than reopening it for every file.
+        with self._lock:
+            if self._closed and self._db is None: raise ToolError('Service stopped')
+            if self._db is None:
+                self._db=sqlite3.connect(self.path,check_same_thread=False)
+                self._db.row_factory=sqlite3.Row
+            with self._db as db:
+                cursor=db.execute(sql,args)
+                if cursor.description:
+                    rows=[dict(r) for r in cursor.fetchall()]
+                    return (rows[0] if rows else None) if one else rows
 
     def _state(self):
         row=self.query('SELECT value FROM strm_state WHERE id=1',one=True)
@@ -129,6 +139,13 @@ class Service:
     def generate_all(self):
         state={'state':'RUNNING','found':0,'generated':0,'failed':0,'error':None}
         self._save_state(state)
+        last_progress=time.monotonic()
+        def save_progress():
+            nonlocal last_progress
+            now=time.monotonic()
+            if now-last_progress>=1:
+                self._save_state(state)
+                last_progress=now
         seen_files=set(); seen_dirs=set(); outputs={}; inventory=[]
         state['relocated']=0
         state['paths']=[]
@@ -176,7 +193,7 @@ class Service:
                         except Exception as exc:
                             state['failed']+=1
                             state['error']='OUTPUT_CONFLICT' if isinstance(exc,SafetyError) else 'FILE_GENERATION_FAILED'
-                        self._save_state(state)
+                        save_progress()
             for row in self.storage.virtual_rows():
                 if self._stop.is_set(): raise InterruptedError()
                 state['found']+=1
@@ -187,14 +204,16 @@ class Service:
                 except Exception as exc:
                     state['failed']+=1
                     state['error']='OUTPUT_CONFLICT' if isinstance(exc,SafetyError) else 'FILE_GENERATION_FAILED'
-                self._save_state(state)
+                save_progress()
             state['state']='DONE' if not state['failed'] else 'PARTIAL'
             if state['state']=='DONE':
                 self.storage.publish_inventory(inventory)
                 # Earlier versions updated strm_path but left their old output
                 # behind. Only exact stable-URL duplicates of files successfully
                 # generated this round, with the same filename, are candidates.
+                current_outputs={Path(output) for _,output,_ in outputs.values()}
                 for old in self.strm.root.rglob('*.strm'):
+                    if old in current_outputs: continue
                     if old.is_symlink() or not old.resolve().is_relative_to(self.strm.root):
                         continue
                     try: match=outputs.get(old.read_text('utf-8'))
@@ -241,13 +260,13 @@ class Service:
             raise
         content=Path(output).read_bytes()
         if content.decode('utf-8').replace('\r\n','\n')!=self.config.playback_url(token)+'\n': raise SafetyError('Output changed')
-        self.query('INSERT INTO strm_output_proofs VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET file_id=excluded.file_id,digest=excluded.digest',
+        self.query('INSERT INTO strm_output_proofs VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET file_id=excluded.file_id,digest=excluded.digest WHERE strm_output_proofs.file_id!=excluded.file_id OR strm_output_proofs.digest!=excluded.digest',
             (output,fid,hashlib.sha256(content).hexdigest()))
         if checkpoint: self.query("UPDATE strm_address_updates SET state='DONE' WHERE id=?",(checkpoint[0],))
         if previous and previous['strm_path'] and previous['strm_path']!=output:
             if self.relocate(fid,previous['strm_path'],output,token)=='DONE' and state is not None:
                 state['relocated']+=1
-        self.query('UPDATE strm_files SET strm_path=? WHERE file_id=?',(output,fid))
+        self.query('UPDATE strm_files SET strm_path=? WHERE file_id=? AND (strm_path IS NULL OR strm_path!=?)',(output,fid,output))
         return output
 
     def legacy_loopback_digest(self,target,token):
@@ -274,6 +293,8 @@ class Service:
             if row and (row['size']!=file.size or (row['sha1'] and file.sha1 and row['sha1']!=file.sha1)):
                 raise SafetyError('Source identity changed')
             token=row['token'] if row else secrets.token_urlsafe(32)
+            if row and (row['pickcode'],row['name'],row['parent_id'],row['relative_path'])==(file.pickcode,file.name,file.parent_id,path) and (not file.sha1 or row['sha1']==file.sha1):
+                return token
             self.query('''INSERT INTO strm_files VALUES(?,?,?,?,?,?,?,?,NULL)
                 ON CONFLICT(file_id) DO UPDATE SET pickcode=excluded.pickcode,name=excluded.name,
                 sha1=CASE WHEN excluded.sha1='' THEN strm_files.sha1 ELSE excluded.sha1 END,parent_id=excluded.parent_id,relative_path=excluded.relative_path''',
@@ -297,4 +318,5 @@ class Service:
         if worker and worker is not threading.current_thread(): worker.join()
         self.storage.close()
         with self._lock:
+            if self._db is not None: self._db.close(); self._db=None
             self.client.close(); self._file_lock.close()

@@ -79,6 +79,13 @@ class StorageManager:
                 CREATE TABLE IF NOT EXISTS actual_inventory_state (
                 id INTEGER PRIMARY KEY CHECK(id=1),scope TEXT NOT NULL,scanned_at REAL NOT NULL);''')
             db.execute('CREATE TABLE IF NOT EXISTS removed_storage_records (media_id TEXT PRIMARY KEY,removed_at REAL NOT NULL)')
+            # Traversal checks these for every entry. Index both sides of the
+            # directory OR so large copy/checkpoint histories stay inexpensive.
+            for table, columns in (
+                    ('resource_copies', ('file_id','root_cid','folder_cid')),
+                    ('abandoned_resource_copies', ('root_cid','folder_cid'))):
+                for column in columns:
+                    db.execute(f'CREATE INDEX IF NOT EXISTS idx_{table}_{column} ON {table}({column})')
             for before,after in [('SHARE_CREATING','SHARE_CREATE_UNKNOWN'),('SOURCE_DELETING','SOURCE_DELETE_UNKNOWN')]:
                 db.execute('UPDATE resource_storage SET stage=? WHERE stage=?',(after,before))
             for before,after in [('FOLDER_CREATING','FOLDER_UNKNOWN'),('RECEIVING','RECEIVE_UNKNOWN'),('DELETING','DELETE_UNKNOWN')]:

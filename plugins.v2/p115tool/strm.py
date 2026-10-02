@@ -54,7 +54,7 @@ class StrmManager:
         original=None
         if target.exists():
             original=target.read_bytes()
-            if target.read_text('utf-8')==content: return str(target)
+            if original.decode('utf-8').replace('\r\n','\n').replace('\r','\n')==content: return str(target)
             if not expected_digest or hashlib.sha256(original).hexdigest()!=expected_digest:
                 raise SafetyError('Existing STRM differs')
             replacing=True
