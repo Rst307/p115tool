@@ -38,10 +38,8 @@ def dispatch(plugin,route,payload):
         if route=='action' and payload=={'action':'scan_storage'}: return service.storage.start('scan')
         if route=='action' and set(payload)=={'action','link','password'} and payload['action']=='import_share':
             return service.storage.start('import',{'link':payload['link'],'password':payload['password']})
-        if route=='action' and set(payload)=={'action','ids','delete_source'} and payload['action']=='virtualize':
-            return service.storage.start('virtualize',{'ids':payload['ids'],'delete_source':payload['delete_source']})
-        if route=='action' and set(payload)=={'action','delete_source'} and payload['action']=='virtualize_all':
-            return service.storage.start('virtualize_all',{'delete_source':payload['delete_source']})
+        if route=='action' and payload.get('action') in ('virtualize','virtualize_all'):
+            return service.storage.start(payload['action'],{k:v for k,v in payload.items() if k!='action'})
         if route=='action' and set(payload)=={'action','ids'} and payload['action']=='reconcile_storage':
             return service.storage.start('reconcile',{'ids':payload['ids']})
         if route=='action' and set(payload)=={'action','ids'} and payload['action']=='delete_storage_records':

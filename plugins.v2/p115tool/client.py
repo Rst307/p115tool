@@ -4,7 +4,7 @@ import re
 import threading
 import time
 from urllib.parse import urlsplit
-from .models import RemoteFile, DownloadLink, RemoteError, MissingFile, SafetyError
+from .models import RemoteFile, DownloadLink, RemoteError, MissingFile, SafetyError, ShareRejected
 
 def response_code(response):
     if not isinstance(response,dict): return None
@@ -90,6 +90,11 @@ class P115ClientManager:
                 time.sleep(wait)
             try:
                 result=getattr(self._client(), method)(*args, timeout=self.config.request_timeout, **kwargs)
+                if (method=='share_send' and isinstance(result,dict) and result.get('state') in (False,0)
+                        and isinstance(result.get('data',{}),dict) and not result.get('data',{}).get('share_code')):
+                    error=ShareRejected('115 rejected share creation')
+                    error.upstream_code=response_code(result)
+                    raise error
                 if isinstance(result,dict) and result.get('state') in (False,0): check_response(result)
                 return result
             except RemoteError as exc:

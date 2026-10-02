@@ -4,6 +4,7 @@ from dataclasses import dataclass
 class ToolError(RuntimeError): pass
 class SafetyError(ToolError): pass
 class RemoteError(ToolError): pass
+class ShareRejected(RemoteError): pass
 class MissingFile(RemoteError): pass
 
 @dataclass(frozen=True)
