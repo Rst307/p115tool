@@ -13,11 +13,13 @@ from .models import SafetyError, MissingFile, ToolError
 from .strm import StrmManager, classify, safe_parts
 
 class Service:
-    def __init__(self,config,client=None,recognizer=None):
+    def __init__(self,config,client=None,recognizer=None,virtual_organizer=None):
         self.config=config
         self.client=client or P115ClientManager(config)
         self._lock=threading.RLock(); self._stop=threading.Event(); self._worker=None
         self._closed=False; self.recognizer=recognizer
+        from .virtual_organize import organize_virtual
+        self.virtual_organizer=virtual_organizer or organize_virtual
         self._auto_timer=None; self._auto_revision=0; self._rerun=False
         directory=Path(config.data_dir); directory.mkdir(parents=True,exist_ok=True)
         self.path=directory/'media.sqlite3'

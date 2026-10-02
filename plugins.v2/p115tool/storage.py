@@ -337,22 +337,24 @@ class StorageManager:
         for file,relative in files:
             if self.service._stop.is_set(): raise InterruptedError()
             media_id='v_'+digest+'_'+file.file_id
-            destination=classify('/分享导入/'+digest[:8],relative,
-                **({'recognizer':self.service.recognizer} if self.service.recognizer else {}))
-            record=RemoteFile(media_id,file.name,file.size,file.sha1,'0','',is_dir=False)
-            self.service.register(record,destination)
-            existing=self.row(media_id)
-            if existing and (existing['share_fid']!=file.file_id or existing['share_code']!=code):
-                raise SafetyError('Share mapping changed')
-            self.service.query("INSERT INTO resource_storage(media_id,kind,stage,share_code,password,share_fid) "
-                "VALUES(?,'VIRTUAL','READY',?,?,?) ON CONFLICT(media_id) DO UPDATE SET password=excluded.password",
-                (media_id,code,password,file.file_id))
             try:
+                existing=self.row(media_id)
+                if existing and (existing['share_fid']!=file.file_id or existing['share_code']!=code):
+                    raise SafetyError('Share mapping changed')
+                destination=self.service.virtual_organizer(relative)
+                safe_parts(destination)
+                if self.service._stop.is_set(): raise InterruptedError()
+                record=RemoteFile(media_id,file.name,file.size,file.sha1,'0','',is_dir=False)
+                self.service.register(record,destination)
+                self.service.query("INSERT INTO resource_storage(media_id,kind,stage,share_code,password,share_fid) "
+                    "VALUES(?,'VIRTUAL','READY',?,?,?) ON CONFLICT(media_id) DO UPDATE SET password=excluded.password",
+                    (media_id,code,password,file.file_id))
                 row=self.row(media_id)
                 self.service.write_output(media_id,row['relative_path'],row['token'])
                 job['done']+=1
+            except InterruptedError: raise
             except Exception:
-                job['failed']+=1;job['error']='RESOURCE_BLOCKED'
+                job['failed']+=1;job['error']='VIRTUAL_ORGANIZE_FAILED'
             self._job(job)
 
     def verify_share(self, row):
