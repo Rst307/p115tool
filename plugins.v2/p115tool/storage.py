@@ -228,7 +228,6 @@ class StorageManager:
         if action=='import':
             if set(payload)!={'link','password'}: raise ValueError('Invalid import')
             args=parse_share(payload['link'],payload['password'])
-            if not self.config.temp_cid: return {'state':'CONFIG_REQUIRED','field':'temp_cid'}
         elif action=='virtualize':
             if set(payload)!={'ids','delete_source'} or payload['delete_source'] is not True:
                 raise ValueError('Explicit source deletion authorization required')
@@ -351,7 +350,6 @@ class StorageManager:
             try:
                 row=self.row(media_id)
                 self.service.write_output(media_id,row['relative_path'],row['token'])
-                self.ensure_copy(media_id)
                 job['done']+=1
             except Exception:
                 job['failed']+=1;job['error']='RESOURCE_BLOCKED'
