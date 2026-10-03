@@ -1,9 +1,9 @@
 {
   "files": {
     "__federation_expose_Config-BdKL4bEl.js": "84bb6681f496a7fc65f0e9d60d0fbb3a47a107480ff237e4d6f32942e9d69698",
-    "__federation_expose_Page-CciAN7im.js": "2e35a7bd68f8136f87a1f0945def85d6d126e0ac769cb505edc8684ed68dbc55",
+    "__federation_expose_Page-BONwbSkJ.js": "9e8cc6bfd46c0d69eb18d3122ebf6f659a2e17ebe08df2dfb73092d9034043d1",
     "__federation_fn_import-E6wRZccp.js": "11a2d68813601dffb4a4bb619cabf25526a7a445b054e418100e24128f6bdca2",
-    "remoteEntry.js": "11cf5f42a045fc7b43c5d058d32a09089e244a977a34dcf30930244aee80b511",
+    "remoteEntry.js": "91b1f3db3544cb3a3b7de5c406891e9b33e5a8a2e93cf1d88fb2c41314466134",
     "ui-8x_RroF5.js": "553c8d123629b6b0973f04aad53ed63c24dca9e6d54f90a8d72d39d349903fb3",
     "ui-8ywdPfsL.css": "2ef95b8b815c42df3917d25905df1d3adeb130053ee97be788d2c60f59650136"
   },
@@ -16,8 +16,8 @@
     "frontend/src/main.js": "60929e90fdb9d5090b51b772a517645b8da18e347a2f0362de34be7bc7fae3a1",
     "frontend/src/navigation.js": "b2a8f9d5d2cf5ea3bc6d40dc14a9886643e1a412cdc644ff9cc643a84c6a3bd4",
     "frontend/src/Page.vue": "5211b3a5256dd00023f524b9678da15986464483b282ad38ff95e5c3c6049e44",
-    "frontend/src/storage.js": "0ac1609c3bb4059c8ad46302df90e10e7aa007323fc1bec8c460d9dd78b85a0e",
-    "frontend/src/Storage.vue": "808d8496d9faf4144b7deb30a462aac2c60e35a4c81f634e2a1cdddab9c9cea4",
+    "frontend/src/storage.js": "47c7672f21d32e622a6489f851a12869abd6f729d056e6ba76d191940347fbf3",
+    "frontend/src/Storage.vue": "59fc32951dbb1f7d13eda830186a90751b5c08b126f01b15f3bd2d00d28cd02a",
     "frontend/src/ui.css": "149d6317202234286588b8c32c28c346f84dcbbecb5855823060be4ebc11a342"
   }
 }

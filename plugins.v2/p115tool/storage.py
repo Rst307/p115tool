@@ -188,6 +188,11 @@ class StorageManager:
     def inventory_scope(self):
         return json.dumps([sorted(s['cid'] for s in self.config.source_cids),self.config.temp_cid])
 
+    def inventory_recent(self):
+        snapshot=self.service.query('SELECT * FROM actual_inventory_state WHERE id=1',one=True)
+        return bool(snapshot and snapshot['scope']==self.inventory_scope()
+                    and 0<=time.time()-snapshot['scanned_at']<1800)
+
     def scan_actual(self, job):
         # Enumerate everything before replacing the last successful snapshot.
         files=[]; seen_dirs=set(); seen_files=set()
@@ -214,14 +219,20 @@ class StorageManager:
                     seen_files.add(file.file_id)
                     files.append((file,prefix.rstrip('/')+'/'+relative_path))
                 job['scanned']=len(seen_dirs);job['found']=len(files)
-                if 'action' in job: self._job(job)
+                if 'action' in job: self._progress(job)
         # Preserve existing playback identities and STRM paths, including checkpoints.
+        job['phase']='REGISTERING';job['total']=len(files);job['registered']=0
+        if 'action' in job: self._progress(job)
         for file,path in files:
+            job['current']=file.file_id
+            if 'action' in job: self._progress(job)
             if self.service._stop.is_set(): raise InterruptedError()
             previous=self.service.query('SELECT relative_path FROM strm_files WHERE file_id=?',(file.file_id,),one=True)
             destination=previous['relative_path'] if previous else classify('/',path.lstrip('/'),
                 **({'recognizer':self.service.recognizer} if self.service.recognizer else {}))
             self.service.register(file,destination)
+            job['registered']+=1
+            if 'action' in job: self._progress(job)
         self.publish_inventory([(f.file_id,p) for f,p in files])
         job['done']=len(files)
 
@@ -299,8 +310,10 @@ class StorageManager:
             elif action=='cleanup': self.cleanup(job)
             else:
                 if action=='virtualize_all':
-                    # Refresh the complete configured scope before any remote write.
-                    self.scan_actual(job)
+                    # Reuse a recent complete snapshot (also the scan just awaited
+                    # by a queued request). Each source is still stat-verified
+                    # immediately before sharing or deleting.
+                    if not self.inventory_recent(): self.scan_actual(job)
                     args=([r['media_id'] for r in self.service.query(
                         "SELECT a.media_id FROM actual_inventory a LEFT JOIN resource_storage s "
                         "ON s.media_id=a.media_id WHERE coalesce(s.kind,'ACTUAL')='ACTUAL' "
