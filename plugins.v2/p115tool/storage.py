@@ -20,6 +20,10 @@ from .strm import classify, safe_parts
 UA = 'p115tool-storage-validation'
 PLAYBACK_GUARD = 24 * 3600
 RECEIVE_RECOVERY_COOLDOWN = 30
+PURGE_REASONS = {'LEGACY_CHECKPOINT','RECYCLE_IDENTITY_NOT_UNIQUE','RECYCLE_PURGE_UNCONFIRMED',
+                'RECYCLE_LIST_UNSUPPORTED','RECYCLE_ENTRY_UNSUPPORTED','RECYCLE_ENTRY_INVALID',
+                'RECYCLE_LIST_INCOMPLETE','RECYCLE_UPSTREAM_ERROR','RECYCLE_SOURCE_PRESENT','RECYCLE_UNKNOWN'}
+PURGE_OPERATIONS = {'recyclebin_list','recyclebin_clean','fs_file'}
 
 
 def parse_share(link, password):
@@ -73,6 +77,8 @@ class StorageManager:
                 folder_name TEXT NOT NULL,folder_cid TEXT NOT NULL,file_id TEXT NOT NULL,
                 stage TEXT NOT NULL,received_at REAL NOT NULL,lease_until REAL NOT NULL,
                 abandoned_at REAL NOT NULL)''')
+            db.execute('''CREATE TABLE IF NOT EXISTS recycle_purge_diagnostics (
+                intent_id TEXT PRIMARY KEY,reason TEXT NOT NULL,operation TEXT NOT NULL,upstream_code INTEGER)''')
             db.execute("UPDATE recycle_purge_intents SET stage='UNKNOWN' WHERE stage='PURGING'")
             db.executescript('''CREATE TABLE IF NOT EXISTS actual_inventory (
                 media_id TEXT PRIMARY KEY,path TEXT NOT NULL);
@@ -135,14 +141,47 @@ class StorageManager:
             +where+' ORDER BY f.relative_path,f.file_id LIMIT 50 OFFSET ?',(*args,(page-1)*50))
         for item in items:
             item['expires_at']=(item.pop('received_at') or 0)+self.config.temp_days*86400 if item['copy_state']=='READY' else None
+        purge_pending,purge_total=self.purge_diagnostics()
         return {'items':items,'total':total,'page':page,'job':self.job(),'busy':self.busy,
                 'temp_days':self.config.temp_days,'cleanup_enabled':self.config.temp_cleanup,
                 'recycle_purge_enabled':self.config.recycle_purge,
                 'recycle_key_configured':bool(self.config.recycle_password),
-                'recycle_purge_blocked':bool(self.service.query("SELECT id FROM recycle_purge_intents WHERE stage!='DONE' LIMIT 1",one=True)),
+                'recycle_purge_blocked':bool(purge_total),
+                'recycle_purge_pending':purge_pending,'recycle_purge_pending_total':purge_total,
                 'temp_configured':bool(self.config.temp_cid),'sources_configured':bool(self.config.source_cids),
                 'scanned_at':snapshot['scanned_at'] if current else None,
                 'queued':self._pending_action is not None}
+
+    def purge_diagnostics(self):
+        # Local reads only. Never return an intent ID, raw SDK text or credentials.
+        total=self.service.query("SELECT count(*) n FROM recycle_purge_intents WHERE stage!='DONE'",one=True)['n']
+        rows=self.service.query("SELECT i.file_id,i.rid,i.stage,d.reason,d.operation,d.upstream_code "
+            "FROM recycle_purge_intents i LEFT JOIN recycle_purge_diagnostics d ON d.intent_id=i.id "
+            "WHERE i.stage!='DONE' ORDER BY i.id LIMIT 20")
+        result=[]
+        for row in rows:
+            fid=row['file_id']
+            result.append({'file_id':fid if isinstance(fid,str) and re.fullmatch(r'[1-9][0-9]{0,19}',fid) else '',
+                'stage':row['stage'] if row['stage'] in ('PREPARED','PURGING','UNKNOWN') else 'UNKNOWN',
+                'target_recorded':bool(row['rid']),
+                'reason':row['reason'] if row['reason'] in PURGE_REASONS else 'LEGACY_CHECKPOINT',
+                'operation':row['operation'] if row['operation'] in PURGE_OPERATIONS else 'unknown',
+                'upstream_code':row['upstream_code'] if type(row['upstream_code']) is int else None})
+        return result,total
+
+    def record_purge_failure(self, intent, exc):
+        from .api import SAFETY_REASONS
+        message=exc.args[0] if isinstance(exc,ToolError) and exc.args else None
+        reason=SAFETY_REASONS.get(message) if type(message) is str else None
+        operation=getattr(exc,'operation',None)
+        operation=operation if type(operation) is str and operation in PURGE_OPERATIONS else 'unknown'
+        if reason not in PURGE_REASONS:
+            reason='RECYCLE_SOURCE_PRESENT' if message=='Deleted file still present' else (
+                'RECYCLE_UPSTREAM_ERROR' if operation!='unknown' else 'RECYCLE_UNKNOWN')
+        code=getattr(exc,'upstream_code',None)
+        code=code if type(code) is int and -(2**63)<=code<2**63 else None
+        self.service.query('INSERT OR REPLACE INTO recycle_purge_diagnostics VALUES(?,?,?,?)',
+                           (intent,reason,operation,code))
 
     def delete_records(self, ids):
         # Remove list membership only. Playback mappings, copy ownership and all
@@ -556,6 +595,7 @@ class StorageManager:
             self.service.query("UPDATE recycle_purge_intents SET stage='DONE' WHERE id=?",(intent,))
         except Exception as exc:
             self.service.query("UPDATE recycle_purge_intents SET stage='UNKNOWN' WHERE id=?",(intent,))
+            self.record_purge_failure(intent,exc)
             from .api import log_failure
             log_failure(exc,context='recycle')
             raise ToolError('Recycle purge needs attention; batch stopped') from None
