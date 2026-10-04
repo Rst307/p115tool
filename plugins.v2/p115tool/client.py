@@ -223,7 +223,9 @@ class P115ClientManager:
             raise SafetyError("Download URL is outside configured 115 CDN domains")
 
     def normal_link(self, pickcode, ua):
-        return self._link(self.call("download_url", pickcode, user_agent=ua))
+        # The SDK defaults to os_windows, which can reject a valid web cookie
+        # with errno 99 even while file reads and chrome downloads succeed.
+        return self._link(self.call("download_url", pickcode, user_agent=ua, app="chrome"))
 
     def share_files(self, code, password, cid='0'):
         offset, seen = 0, set()
