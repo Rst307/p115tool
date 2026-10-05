@@ -1,9 +1,9 @@
 {
   "files": {
     "__federation_expose_Config-BdKL4bEl.js": "84bb6681f496a7fc65f0e9d60d0fbb3a47a107480ff237e4d6f32942e9d69698",
-    "__federation_expose_Page-DREzfOTQ.js": "26489e090a4a464e741a34985ce21e3e37c3d0405c8dfd136b0d05aa52c070b2",
+    "__federation_expose_Page-CNAOvWqX.js": "9f81b970fdeb0caac647555b774bc648c54ea1f334ec6966cfa6285061cced33",
     "__federation_fn_import-E6wRZccp.js": "11a2d68813601dffb4a4bb619cabf25526a7a445b054e418100e24128f6bdca2",
-    "remoteEntry.js": "53bc3bd994c4d7c562ded44a0c0e3ecdc3674aedcca0f9ef02b6c43d5bbab0dc",
+    "remoteEntry.js": "5a74ecf2b2455108c1923b9291eca654253e978be712c5c5504b20d5fbb2763e",
     "ui-8x_RroF5.js": "553c8d123629b6b0973f04aad53ed63c24dca9e6d54f90a8d72d39d349903fb3",
     "ui-8ywdPfsL.css": "2ef95b8b815c42df3917d25905df1d3adeb130053ee97be788d2c60f59650136"
   },
@@ -16,8 +16,8 @@
     "frontend/src/main.js": "60929e90fdb9d5090b51b772a517645b8da18e347a2f0362de34be7bc7fae3a1",
     "frontend/src/navigation.js": "b2a8f9d5d2cf5ea3bc6d40dc14a9886643e1a412cdc644ff9cc643a84c6a3bd4",
     "frontend/src/Page.vue": "5211b3a5256dd00023f524b9678da15986464483b282ad38ff95e5c3c6049e44",
-    "frontend/src/storage.js": "97968db6043c633dfdb02ef2a70e65c1b133c1d2f463685430a91ad6a33adb17",
-    "frontend/src/Storage.vue": "4bf9b5e28d7ad18de02c2c96fb5ea4c4c96704f453f1d98855e55aa6846e2d04",
+    "frontend/src/storage.js": "94f20978464dfc10fc74c9c8dbabfc5876e49e7df5ea42aad7948abe74b0d253",
+    "frontend/src/Storage.vue": "08d4e94889d914d9187df13482bc34aa4a549ae24f0c5837f145bfcb9f800539",
     "frontend/src/ui.css": "149d6317202234286588b8c32c28c346f84dcbbecb5855823060be4ebc11a342"
   }
 }

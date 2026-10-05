@@ -6,6 +6,7 @@ No legacy share/cache/delete tasks are resumed.
 """
 from contextlib import closing
 import hashlib
+import errno
 import json
 from pathlib import Path
 import re
@@ -24,6 +25,54 @@ PURGE_REASONS = {'LEGACY_CHECKPOINT','RECYCLE_IDENTITY_NOT_UNIQUE','RECYCLE_PURG
                 'RECYCLE_LIST_UNSUPPORTED','RECYCLE_ENTRY_UNSUPPORTED','RECYCLE_ENTRY_INVALID',
                 'RECYCLE_LIST_INCOMPLETE','RECYCLE_UPSTREAM_ERROR','RECYCLE_SOURCE_PRESENT','RECYCLE_UNKNOWN'}
 PURGE_OPERATIONS = {'recyclebin_list','recyclebin_clean','fs_file'}
+CONVERSION_OPERATIONS = PURGE_OPERATIONS | {'fs_files','share_send','share_update','share_snap','share_download_url','fs_delete'}
+SESSION_CODES = {99,990001}
+
+
+def conversion_diagnosis(exc, phase):
+    code=getattr(exc,'upstream_code',None)
+    code=code if type(code) is int and -(2**63)<=code<2**63 else None
+    operation=getattr(exc,'operation',None)
+    operation=operation if type(operation) is str and operation in CONVERSION_OPERATIONS else 'unknown'
+    message=exc.args[0] if isinstance(exc,ToolError) and exc.args else None
+    reasons={
+        'Invalid actual source':'SOURCE_INVALID',
+        'Source identity changed':'SOURCE_IDENTITY_CHANGED',
+        'Source changed before deletion':'SOURCE_IDENTITY_CHANGED',
+        '115 file identity mismatch':'SOURCE_IDENTITY_CHANGED',
+        'Unresolved write checkpoint':'WRITE_CHECKPOINT_UNRESOLVED',
+        'Existing STRM differs':'STRM_CONFLICT',
+        'Existing STRM changed':'STRM_CONFLICT',
+        'Existing STRM changed after checkpoint':'STRM_CONFLICT',
+        'Unsafe STRM path':'STRM_PATH_INVALID',
+        'Unsafe output target':'STRM_PATH_INVALID',
+        'Unsafe output parent':'STRM_PATH_INVALID',
+        'Address update outcome unresolved':'STRM_CHECKPOINT_UNRESOLVED',
+        'Output changed':'STRM_CONFLICT',
+        'Share identity is ambiguous':'SHARE_IDENTITY_NOT_UNIQUE',
+        'Share playback validation failed':'SHARE_PLAYBACK_NOT_AVAILABLE',
+        'Share contains no media':'SHARE_MEDIA_NOT_AVAILABLE',
+    }
+    reason=reasons.get(message,'RESOURCE_BLOCKED') if type(message) is str else 'RESOURCE_BLOCKED'
+    if code in SESSION_CODES: reason='SESSION_REJECTED'
+    elif code==911: reason='UPSTREAM_VERIFICATION_REQUIRED'
+    elif phase in ('SOURCE_CHECK','SOURCE_RECHECK'):
+        if isinstance(exc,MissingFile): reason='SOURCE_MISSING'
+        elif isinstance(exc,RemoteError): reason='SOURCE_READ_FAILED'
+    elif phase=='STRM_WRITING':
+        if isinstance(exc,PermissionError): reason='STRM_PERMISSION_DENIED'
+        elif isinstance(exc,OSError) and exc.errno==errno.ENOSPC: reason='STRM_DISK_FULL'
+        elif isinstance(exc,OSError): reason='STRM_IO_FAILED'
+        elif isinstance(exc,UnicodeError): reason='STRM_ENCODING_FAILED'
+    elif phase=='SHARE_RETAINING' and isinstance(exc,RemoteError): reason='SHARE_RETAIN_FAILED'
+    return {'reason':reason,'operation':operation,'upstream_code':code}
+
+
+def conversion_unknown(message, exc):
+    error=ToolError(message)
+    details=conversion_diagnosis(exc,'')
+    error.operation=details['operation'];error.upstream_code=details['upstream_code']
+    return error
 
 
 def parse_share(link, password):
@@ -385,30 +434,34 @@ class StorageManager:
                     except InterruptedError: raise
                     except Exception as exc:
                         row=self.row(media_id)
+                        diagnosis=conversion_diagnosis(exc,job['phase'])
+                        session_blocked=diagnosis['reason'] in ('SESSION_REJECTED','UPSTREAM_VERIFICATION_REQUIRED')
                         # Give processing shares one later turn after other files.
                         # Only pre-delete transient read failures qualify; reuse the
                         # recorded share and never replay an uncertain remote write.
                         if (action in ('virtualize','virtualize_all') and row
-                                and row['stage']=='SHARE_CHECK'
+                                and row['stage']=='SHARE_CHECK' and not session_blocked
                                 and job['phase'] in ('SHARE_CHECK','SHARE_WAITING')
                                 and (isinstance(exc,RemoteError) or (type(exc) is SafetyError
                                     and exc.args==('Share contains no media',))) and media_id not in deferred):
                             deferred.add(media_id);queue.append(media_id)
                             job['pending']+=1;self._job(job)
                             continue
-                        job['failed']+=1;job['error']='RESOURCE_BLOCKED'
+                        job['failed']+=1;job['error']=diagnosis['reason']
                         stage=row['stage'] if row else 'RESOURCE_BLOCKED'
                         if stage in ('SHARE_REJECTED','SHARE_CHECK','SHARE_UNAVAILABLE','SHARE_CREATE_UNKNOWN','SOURCE_DELETE_UNKNOWN'):
                             job['error']=stage
+                        if session_blocked and stage not in ('SHARE_UNAVAILABLE','SHARE_CREATE_UNKNOWN','SOURCE_DELETE_UNKNOWN'):
+                            job['error']=diagnosis['reason']
                         if job['phase']=='RECYCLE_SNAPSHOT': job['error']='RECYCLE_PRECHECK_FAILED'
                         if isinstance(exc,SafetyError) and exc.args==('Recycle identity metadata unavailable',):
                             job['error']='RECYCLE_IDENTITY_UNSUPPORTED'
                         if (self.config.recycle_purge or action in ('virtualize','virtualize_all') and args[1]) and self.service.query("SELECT id FROM recycle_purge_intents WHERE stage!='DONE' LIMIT 1",one=True):
                             job['error']='RECYCLE_PURGE_BLOCKED'
-                        code=getattr(exc,'upstream_code',None)
                         job['results']=(job['results']+[{'id':media_id,'state':'FAILED','error':job['error'],
-                            'upstream_code':code if type(code) is int else None}])[-50:]
+                            'phase':job['phase'],**diagnosis}])[-50:]
                         self._job(job)
+                        if session_blocked: break
                         if job['error']=='RECYCLE_PURGE_BLOCKED': break
                         if action in ('virtualize','virtualize_all') and row and row['stage'] in ('SHARE_CREATE_UNKNOWN','SOURCE_DELETE_UNKNOWN','SHARE_UNAVAILABLE'):
                             self._job(job)
@@ -488,6 +541,7 @@ class StorageManager:
             if self.service._stop.is_set(): raise InterruptedError()
             try: return self.verify_share(row)
             except Exception as exc:
+                if getattr(exc,'upstream_code',None) in SESSION_CODES | {911}: raise
                 pending=isinstance(exc,RemoteError) or (type(exc) is SafetyError and exc.args==('Share contains no media',))
                 if not pending or attempt==2: raise
                 progress('SHARE_WAITING')
@@ -511,9 +565,11 @@ class StorageManager:
                 raise SafetyError('Unresolved write checkpoint')
             source=self.service.query('SELECT * FROM strm_files WHERE file_id=?',(media_id,),one=True)
             if not source or not re.fullmatch(r'[1-9][0-9]{0,19}',media_id): raise SafetyError('Invalid actual source')
+            progress('SOURCE_CHECK')
             actual=self.client.stat(media_id)
             if not matches(actual,source,source['parent_id']): raise SafetyError('Source identity changed')
             # Ensure a readable, owned STRM exists before considering source removal.
+            progress('STRM_WRITING')
             self.service.write_output(media_id,source['relative_path'],source['token'])
             if not row or row['stage']=='SHARE_REJECTED':
                 self.service.query("INSERT INTO resource_storage(media_id,kind,stage,own) VALUES(?,'ACTUAL','SHARE_CREATING',1) "
@@ -523,9 +579,9 @@ class StorageManager:
                 except ShareRejected:
                     self.service.query("UPDATE resource_storage SET stage='SHARE_REJECTED' WHERE media_id=?",(media_id,))
                     raise
-                except Exception:
+                except Exception as exc:
                     self.service.query("UPDATE resource_storage SET stage='SHARE_CREATE_UNKNOWN' WHERE media_id=?",(media_id,))
-                    raise ToolError('Share creation outcome unknown') from None
+                    raise conversion_unknown('Share creation outcome unknown',exc) from None
                 self.service.query("UPDATE resource_storage SET share_code=?,password=?,stage='SHARE_CHECK' WHERE media_id=?",(code,password,media_id))
             row=self.row(media_id)
             if not row['share_retained']:
@@ -538,6 +594,7 @@ class StorageManager:
             # Conversion stores only the verified share mapping and STRM.
             # Playback creates its temporary copy lazily when needed.
             row=self.row(media_id)
+            progress('SOURCE_RECHECK')
             actual=self.client.stat(media_id)
             if not matches(actual,row,row['parent_id']): raise SafetyError('Source changed before deletion')
             if self.service._stop.is_set(): raise InterruptedError()
@@ -557,25 +614,25 @@ class StorageManager:
             try:
                 self.client.delete_verified_file(media_id)
                 self.confirm_absent(media_id)
-            except Exception:
+            except Exception as exc:
                 self.service.query("UPDATE resource_storage SET stage='SOURCE_DELETE_UNKNOWN' WHERE media_id=?",(media_id,))
-                raise ToolError('Source deletion outcome unknown') from None
+                raise conversion_unknown('Source deletion outcome unknown',exc) from None
             self.service.query("UPDATE resource_storage SET kind='VIRTUAL',source_deleted=1,stage='READY' WHERE media_id=?",(media_id,))
             progress('POST_DELETE_CHECK')
             try: self.wait_share(self.row(media_id),progress)
             except InterruptedError: raise
-            except Exception:
+            except Exception as exc:
                 self.service.query("UPDATE resource_storage SET stage='SHARE_UNAVAILABLE' WHERE media_id=?",(media_id,))
-                raise ToolError('Share needs attention; batch stopped') from None
+                raise conversion_unknown('Share needs attention; batch stopped',exc) from None
             progress('RECYCLE_PURGING' if purge is not None else 'POST_DELETE_CHECK')
             self.finish_purge(actual,purge)
             if purge is not None:
                 progress('POST_PURGE_CHECK')
                 try: self.wait_share(self.row(media_id),progress)
                 except InterruptedError: raise
-                except Exception:
+                except Exception as exc:
                     self.service.query("UPDATE resource_storage SET stage='SHARE_UNAVAILABLE' WHERE media_id=?",(media_id,))
-                    raise ToolError('Share needs attention; batch stopped') from None
+                    raise conversion_unknown('Share needs attention; batch stopped',exc) from None
 
     def prepare_purge(self, file, enabled=None):
         if not (self.config.recycle_purge if enabled is None else enabled): return None
