@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "实际与虚拟存储、分享临时转存、分类STRM及302播放",
     "labels": "115,STRM,媒体管理",
-    "version": "0.2.37",
+    "version": "0.2.38",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.2.38": "分享下载显式使用chrome接口，避开SDK默认android实际映射Windows导致的99；保留链接域名、Cookie绑定拒绝与单字节验证，STRM冲突不覆盖",
       "v0.2.37": "转换失败显示固定原因、失败步骤和白名单接口；990001/99会话拒绝、911验证需求停止批次并停止分享只读重试；未知写仍保留检查点，保留脱敏上游诊断",
       "v0.2.36": "实际转虚拟处理中分享批次末尾有界复查，复用长期分享设置；修复未知删源核实提前标记可用；新增进度百分比、单资源恢复与回收站检查点只读核实；回收站缺身份在删源前拦截并提示普通删除",
       "v0.2.35": "修复有效Cookie读取目录正常但播放报99：显式使用Chrome下载接口，避免SDK默认Windows接口拒绝；保留播放器UA、单会话、302直链安全检查及鉴权失败不重试",

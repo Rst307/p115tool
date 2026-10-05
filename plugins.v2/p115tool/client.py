@@ -263,8 +263,10 @@ class P115ClientManager:
         check_response(self.call('share_update', {'share_code':code,'share_duration':-1}))
 
     def share_link(self, code, password, fid, ua):
+        # The pinned SDK's default android value falls back to os_windows.
+        # Select the chrome share endpoint explicitly, as for normal downloads.
         return self._link(self.call('share_download_url', {'share_code':code,
-            'receive_code':password,'file_id':fid}, headers={'User-Agent':ua}))
+            'receive_code':password,'file_id':fid}, app='chrome', headers={'User-Agent':ua}))
 
     def create_temp_directory(self, parent, name):
         response = check_response(self.call('fs_mkdir', name, pid=parent))
