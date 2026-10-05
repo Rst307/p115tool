@@ -71,6 +71,8 @@ class StorageManager:
                 stage TEXT NOT NULL,received_at REAL NOT NULL DEFAULT 0,
                 lease_until REAL NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS resource_job (id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);''')
+            if 'share_retained' not in {column[1] for column in db.execute('PRAGMA table_info(resource_storage)')}:
+                db.execute('ALTER TABLE resource_storage ADD COLUMN share_retained INTEGER NOT NULL DEFAULT 0')
             db.execute('CREATE TABLE IF NOT EXISTS recycle_purge_intents (id TEXT PRIMARY KEY,file_id TEXT NOT NULL,rid TEXT NOT NULL DEFAULT \'\',stage TEXT NOT NULL)')
             db.execute('''CREATE TABLE IF NOT EXISTS abandoned_resource_copies (
                 id TEXT PRIMARY KEY,media_id TEXT NOT NULL,root_cid TEXT NOT NULL,
@@ -119,7 +121,7 @@ class StorageManager:
         self._live_job={**value,'results':list(value.get('results',[]))}
 
     def row(self, media_id):
-        return self.service.query('SELECT f.*,s.kind,s.stage,s.share_code,s.password,s.share_fid,s.own,s.source_deleted '
+        return self.service.query('SELECT f.*,s.kind,s.stage,s.share_code,s.password,s.share_fid,s.own,s.source_deleted,s.share_retained '
             'FROM strm_files f JOIN resource_storage s ON s.media_id=f.file_id WHERE f.file_id=?',(media_id,),one=True)
 
     def copy(self, media_id):
@@ -315,7 +317,7 @@ class StorageManager:
             if payload: raise ValueError('Invalid scan')
             if not self.config.source_cids: return {'state':'SOURCES_REQUIRED'}
             args=()
-        elif action=='cleanup':
+        elif action in ('cleanup','reconcile_purge'):
             if payload: raise ValueError('Invalid cleanup')
             args=()
         else: raise ValueError('Unknown storage action')
@@ -347,6 +349,7 @@ class StorageManager:
             if action=='import': self.import_share(*args,job=job)
             elif action=='scan': self.scan_actual(job)
             elif action=='cleanup': self.cleanup(job)
+            elif action=='reconcile_purge': self.reconcile_purges(job)
             else:
                 if action=='virtualize_all':
                     # Reuse a recent complete snapshot (also the scan just awaited
@@ -360,8 +363,12 @@ class StorageManager:
                     job['done']=0
                 job['total']=len(args[0])
                 self._job(job)
-                for media_id in args[0]:
+                queue=list(args[0]);deferred=set()
+                job['pending']=0;job['rechecked']=0
+                for media_id in queue:
                     if self.service._stop.is_set(): raise InterruptedError()
+                    if media_id in deferred:
+                        job['pending']-=1;job['rechecked']+=1
                     job['current']=media_id;job['phase']='CHECKING';self._progress(job)
                     def progress(phase):
                         job['phase']=phase;self._progress(job)
@@ -377,12 +384,25 @@ class StorageManager:
                         job['results']=(job['results']+[{'id':media_id,'state':'DONE'}])[-50:]
                     except InterruptedError: raise
                     except Exception as exc:
-                        job['failed']+=1;job['error']='RESOURCE_BLOCKED'
                         row=self.row(media_id)
+                        # Give processing shares one later turn after other files.
+                        # Only pre-delete transient read failures qualify; reuse the
+                        # recorded share and never replay an uncertain remote write.
+                        if (action in ('virtualize','virtualize_all') and row
+                                and row['stage']=='SHARE_CHECK'
+                                and job['phase'] in ('SHARE_CHECK','SHARE_WAITING')
+                                and (isinstance(exc,RemoteError) or (type(exc) is SafetyError
+                                    and exc.args==('Share contains no media',))) and media_id not in deferred):
+                            deferred.add(media_id);queue.append(media_id)
+                            job['pending']+=1;self._job(job)
+                            continue
+                        job['failed']+=1;job['error']='RESOURCE_BLOCKED'
                         stage=row['stage'] if row else 'RESOURCE_BLOCKED'
                         if stage in ('SHARE_REJECTED','SHARE_CHECK','SHARE_UNAVAILABLE','SHARE_CREATE_UNKNOWN','SOURCE_DELETE_UNKNOWN'):
                             job['error']=stage
                         if job['phase']=='RECYCLE_SNAPSHOT': job['error']='RECYCLE_PRECHECK_FAILED'
+                        if isinstance(exc,SafetyError) and exc.args==('Recycle identity metadata unavailable',):
+                            job['error']='RECYCLE_IDENTITY_UNSUPPORTED'
                         if (self.config.recycle_purge or action in ('virtualize','virtualize_all') and args[1]) and self.service.query("SELECT id FROM recycle_purge_intents WHERE stage!='DONE' LIMIT 1",one=True):
                             job['error']='RECYCLE_PURGE_BLOCKED'
                         code=getattr(exc,'upstream_code',None)
@@ -395,6 +415,7 @@ class StorageManager:
                             break
                     self._job(job)
             job['state']='DONE' if not job['failed'] else 'PARTIAL'
+            if job['state']=='DONE': job['error']=None
         except InterruptedError: job['state']='INTERRUPTED'
         except Exception: job['state']='FAILED';job['error']='STORAGE_FAILED';job['failed']+=1
         finally:
@@ -481,7 +502,9 @@ class StorageManager:
             if purge_source and not re.fullmatch(r'[0-9]{6}',self.config.recycle_password):
                 raise SafetyError('Recycle security key required')
             row=self.row(media_id)
-            if row and row['kind']=='VIRTUAL': return
+            if row and row['kind']=='VIRTUAL':
+                if row['stage']!='READY': self.reconcile(media_id)
+                return
             if purge_source and self.service.query("SELECT id FROM recycle_purge_intents WHERE stage!='DONE' LIMIT 1",one=True):
                 raise SafetyError('Recycle purge needs attention')
             if row and row['stage'] in ('SHARE_CREATE_UNKNOWN','SOURCE_DELETE_UNKNOWN','SHARE_CREATING','SOURCE_DELETING'):
@@ -494,7 +517,7 @@ class StorageManager:
             self.service.write_output(media_id,source['relative_path'],source['token'])
             if not row or row['stage']=='SHARE_REJECTED':
                 self.service.query("INSERT INTO resource_storage(media_id,kind,stage,own) VALUES(?,'ACTUAL','SHARE_CREATING',1) "
-                    "ON CONFLICT(media_id) DO UPDATE SET stage='SHARE_CREATING'",(media_id,))
+                    "ON CONFLICT(media_id) DO UPDATE SET stage='SHARE_CREATING',share_retained=0",(media_id,))
                 progress('SHARE_CREATING')
                 try: code,password=self.client.create_share(media_id)
                 except ShareRejected:
@@ -505,8 +528,10 @@ class StorageManager:
                     raise ToolError('Share creation outcome unknown') from None
                 self.service.query("UPDATE resource_storage SET share_code=?,password=?,stage='SHARE_CHECK' WHERE media_id=?",(code,password,media_id))
             row=self.row(media_id)
-            progress('SHARE_RETAINING')
-            self.client.retain_share(row['share_code'])
+            if not row['share_retained']:
+                progress('SHARE_RETAINING')
+                self.client.retain_share(row['share_code'])
+                self.service.query('UPDATE resource_storage SET share_retained=1 WHERE media_id=?',(media_id,))
             progress('SHARE_CHECK')
             fid=self.wait_share(row,progress)
             self.service.query('UPDATE resource_storage SET share_fid=? WHERE media_id=?',(fid,media_id))
@@ -557,9 +582,42 @@ class StorageManager:
         if self.service.query("SELECT id FROM recycle_purge_intents WHERE stage!='DONE' LIMIT 1",one=True):
             raise SafetyError('Recycle purge needs attention')
         entries=self.client.recycle_entries()
+        if any(not (entry.get('file_id') or entry.get('fid')) or not (
+                entry.get('sha1') or entry.get('sha') or entry.get('file_sha1')) for entry in entries):
+            # The web list and rb_info can omit both original ID and SHA1.
+            # Detect this before source deletion, rather than deleting then
+            # leaving an impossible-to-identify permanent purge checkpoint.
+            raise SafetyError('Recycle identity metadata unavailable')
         intent=uuid.uuid4().hex
         self.service.query("INSERT INTO recycle_purge_intents(id,file_id,stage) VALUES(?,?,'PREPARED')",(intent,file.file_id))
         return intent,{row['rid'] for row in entries}
+
+    def reconcile_purges(self, job):
+        # Explicit read-only verification of known targets. Never infer missing
+        # target IDs, replay purge requests or clear pre-submit checkpoints.
+        with self._gate:
+            intents=self.service.query("SELECT * FROM recycle_purge_intents WHERE stage!='DONE' ORDER BY id LIMIT 100")
+            job['total']=len(intents)
+            if not intents: return
+            job['phase']='RECYCLE_RECHECK';self._progress(job)
+            entries={entry['rid'] for entry in self.client.recycle_entries()}
+            for intent in intents:
+                if self.service._stop.is_set(): raise InterruptedError()
+                job['current']=intent['file_id'];self._progress(job)
+                if (not re.fullmatch(r'[1-9][0-9]{0,19}',intent['rid'])
+                        or not re.fullmatch(r'[1-9][0-9]{0,19}',intent['file_id'])
+                        or intent['rid'] in entries):
+                    job['failed']+=1;job['error']='RECYCLE_PURGE_BLOCKED'
+                else:
+                    try: self.confirm_absent(intent['file_id'])
+                    except RemoteError:
+                        job['failed']+=1;job['error']='RECYCLE_PURGE_BLOCKED'
+                    except SafetyError:
+                        job['failed']+=1;job['error']='RECYCLE_PURGE_BLOCKED'
+                    else:
+                        self.service.query("UPDATE recycle_purge_intents SET stage='DONE' WHERE id=?",(intent['id'],))
+                        job['done']+=1
+                self._job(job)
 
     def finish_purge(self, file, prepared):
         if prepared is None: return
@@ -845,13 +903,17 @@ class StorageManager:
                 if not matches(actual,source,source['parent_id']): raise SafetyError('Source changed')
                 return
             if row['stage']=='SHARE_CREATE_UNKNOWN': raise SafetyError('Find and attach the existing share manually')
+            source_absent=False
             if row['stage']=='SOURCE_DELETE_UNKNOWN':
                 try:
                     source=self.client.stat(media_id)
                     if not matches(source,row,row['parent_id']): raise SafetyError('Source changed')
                     raise SafetyError('Source still present; deletion is not automatically retried')
                 except MissingFile:
-                    self.service.query("UPDATE resource_storage SET kind='VIRTUAL',source_deleted=1,stage='READY' WHERE media_id=?",(media_id,))
+                    # Preserve the unresolved checkpoint until the saved share
+                    # is verified. No deletion is submitted by reconciliation.
+                    self.verify_share(row)
+                    source_absent=True
             copy=self.copy(media_id)
             if copy and copy['stage']=='READY':
                 try: actual=self.client.stat(copy['file_id'])
@@ -872,7 +934,9 @@ class StorageManager:
                 except MissingFile:
                     self.service.query("UPDATE resource_copies SET stage='EMPTY',file_id='',received_at=0,lease_until=0 WHERE media_id=?",(media_id,))
                 else: raise SafetyError('Temporary file remains; deletion is not retried')
-            if row['kind']=='VIRTUAL' or row['source_deleted']:
+            if source_absent:
+                self.service.query("UPDATE resource_storage SET kind='VIRTUAL',source_deleted=1,stage='READY' WHERE media_id=?",(media_id,))
+            elif row['kind']=='VIRTUAL' or row['source_deleted']:
                 self.verify_share(self.row(media_id))
                 self.service.query("UPDATE resource_storage SET stage='READY' WHERE media_id=?",(media_id,))
 
@@ -884,7 +948,7 @@ class StorageManager:
             if not row or row['stage']!='SHARE_CREATE_UNKNOWN': raise ValueError('No unknown share creation')
             candidate={**row,'share_code':code,'password':password}
             fid=self.verify_share(candidate)
-            self.service.query("UPDATE resource_storage SET share_code=?,password=?,share_fid=?,stage='SHARE_CHECK' WHERE media_id=?",(code,password,fid,media_id))
+            self.service.query("UPDATE resource_storage SET share_code=?,password=?,share_fid=?,stage='SHARE_CHECK',share_retained=0 WHERE media_id=?",(code,password,fid,media_id))
         return {'state':'ATTACHED'}
 
     def virtual_rows(self):

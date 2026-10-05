@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "p115tool"
+version = "0.2.36"
+description = "MoviePilot 115 media toolbox with STRM and unified playback"
+requires-python = ">=3.12"
+dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "p115client==0.0.9.7.2", "apscheduler>=3.11,<4"]
+
+[project.optional-dependencies]
+test = ["httpx>=0.28,<1"]
+
+[tool.setuptools.packages.find]
+include = ["p115tool*"]
+
+[tool.setuptools.package-data]
+p115tool = ["dist/assets/*", "dist/manifest.json", "requirements.txt"]
