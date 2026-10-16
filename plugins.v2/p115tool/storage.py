@@ -27,6 +27,8 @@ PURGE_REASONS = {'LEGACY_CHECKPOINT','RECYCLE_IDENTITY_NOT_UNIQUE','RECYCLE_PURG
 PURGE_OPERATIONS = {'recyclebin_list','recyclebin_clean','fs_file'}
 CONVERSION_OPERATIONS = PURGE_OPERATIONS | {'fs_files','share_send','share_update','share_snap','share_download_url','fs_delete'}
 SESSION_CODES = {99,990001}
+IMPORT_QUEUE_LIMIT = 100
+SHARE_VIDEO_LIMIT = 10000
 
 
 def conversion_diagnosis(exc, phase):
@@ -106,6 +108,7 @@ class StorageManager:
         self.service=service; self.client=service.client; self.config=service.config
         self._gate=threading.RLock(); self._thread=None
         self._live_job=None
+        self._import_queue=[]; self._import_tasks=[]; self._import_keys={}; self._import_sequence=0
         self._pending_action=None; self._refresh_pending=False
         self._refresh_timer=None; self._refresh_revision=0
         with closing(sqlite3.connect(service.path)) as db,db:
@@ -163,11 +166,47 @@ class StorageManager:
         self.service.query('INSERT INTO resource_job VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value',
                            (json.dumps(value),))
         self._live_job=None
+        self._import_progress(value)
 
     def _progress(self, value):
         # Live phases do not need a disk fsync: remote-write checkpoints and
         # completed-file counts remain independently durable before continuing.
         self._live_job={**value,'results':list(value.get('results',[]))}
+        self._import_progress(value)
+
+    def _import_progress(self, value):
+        # Task summaries contain no share URL, extraction code or playback token.
+        with self.service._lock:
+            for task in self._import_tasks:
+                if task['id']==value.get('task_id'):
+                    task.update({key:value[key] for key in
+                        ('state','done','failed','total','error','phase','scanned','found') if key in value})
+                    if task['state'] not in ('QUEUED','RUNNING'): self._trim_import_tasks()
+                    break
+
+    def _trim_import_tasks(self):
+        completed=[t['id'] for t in self._import_tasks if t['state'] not in ('QUEUED','RUNNING')][-50:]
+        self._import_tasks=[t for t in self._import_tasks if t['state'] in ('QUEUED','RUNNING') or t['id'] in completed]
+
+    def import_queue(self):
+        with self.service._lock:
+            return {'pending':len(self._import_queue),'limit':IMPORT_QUEUE_LIMIT,
+                    'tasks':[dict(task) for task in self._import_tasks]}
+
+    def _enqueue_import(self, args):
+        if args[0] in self._import_keys:
+            return {'state':'ALREADY_QUEUED','task_id':self._import_keys[args[0]]}
+        if len(self._import_queue)>=IMPORT_QUEUE_LIMIT: return {'state':'QUEUE_FULL'}
+        task_id=uuid.uuid4().hex; self._import_sequence+=1
+        task={'id':task_id,'number':self._import_sequence,'state':'QUEUED','done':0,'failed':0,'error':None}
+        self._import_tasks.append(task)
+        self._trim_import_tasks()
+        self._import_keys[args[0]]=task_id
+        self._import_queue.append((*args,task_id))
+        self.drain_pending()
+        if task['state']=='RUNNING': return {'state':'RUNNING'}
+        if task['state']=='FAILED': return {'state':'START_FAILED'}
+        return {'state':'QUEUED','task_id':task_id,'position':len(self._import_queue)}
 
     def row(self, media_id):
         return self.service.query('SELECT f.*,s.kind,s.stage,s.share_code,s.password,s.share_fid,s.own,s.source_deleted,s.share_retained '
@@ -201,7 +240,7 @@ class StorageManager:
                 'recycle_purge_pending':purge_pending,'recycle_purge_pending_total':purge_total,
                 'temp_configured':bool(self.config.temp_cid),'sources_configured':bool(self.config.source_cids),
                 'scanned_at':snapshot['scanned_at'] if current else None,
-                'queued':self._pending_action is not None}
+                'queued':self._pending_action is not None,'import_queue':self.import_queue()}
 
     def purge_diagnostics(self):
         # Local reads only. Never return an intent ID, raw SDK text or credentials.
@@ -268,12 +307,18 @@ class StorageManager:
 
     def drain_pending(self):
         # Called under the service lock, only when the previous worker has yielded.
-        if self.service._closed or self.busy or (self.service._worker and self.service._worker.is_alive()): return
-        if self._pending_action:
-            action,payload=self._pending_action; self._pending_action=None
-            self.start(action,payload)
-        elif self._refresh_pending:
-            self._refresh_pending=False; self.start('scan')
+        with self.service._lock:
+            if self.service._closed or self.busy or (self.service._worker and self.service._worker.is_alive()): return
+            if self._pending_action:
+                action,payload=self._pending_action; self._pending_action=None
+                self.start(action,payload)
+            elif self._import_queue:
+                while self._import_queue:
+                    try: self._launch('import',self._import_queue.pop(0))
+                    except ToolError: continue  # Failed starts must not strand later imports.
+                    break
+            elif self._refresh_pending:
+                self._refresh_pending=False; self.start('scan')
 
     def inventory_scope(self):
         return json.dumps([sorted(s['cid'] for s in self.config.source_cids),self.config.temp_cid])
@@ -374,6 +419,7 @@ class StorageManager:
             return {'state':'RECYCLE_KEY_REQUIRED'}
         with self.service._lock:
             if self.service._closed: raise ToolError('Service stopped')
+            if action=='import': return self._enqueue_import(args)
             if self.busy:
                 if self.job()['action']=='scan' and action!='scan' and self._pending_action is None:
                     # Keep one explicit submission in memory, never replay on restart.
@@ -381,21 +427,27 @@ class StorageManager:
                     return {'state':'QUEUED'}
                 return {'state':'BUSY'}
             if self.service._worker and self.service._worker.is_alive(): return {'state':'BUSY'}
-            self._job({'state':'RUNNING','action':action,'done':0,'failed':0,'error':None,
-                       'phase':'SCANNING' if action in ('scan','virtualize_all') else 'STARTING','current':None})
-            self._thread=threading.Thread(target=self._run,args=(action,args),name='p115tool-storage',daemon=True)
-            try: self._thread.start()
-            except Exception:
-                self._job({'state':'FAILED','action':action,'done':0,'failed':1,'error':'START_FAILED'})
-                self._thread=None
-                raise ToolError('Storage task did not start') from None
-            return {'state':'RUNNING'}
+            return self._launch(action,args)
+
+    def _launch(self, action, args):
+        task={'task_id':args[2]} if action=='import' else {}
+        self._job({'state':'RUNNING','action':action,'done':0,'failed':0,'error':None,
+                   'phase':'SCANNING' if action in ('scan','virtualize_all','import') else 'STARTING','current':None,**task})
+        self._thread=threading.Thread(target=self._run,args=(action,args),name='p115tool-storage',daemon=True)
+        try: self._thread.start()
+        except Exception:
+            self._job({'state':'FAILED','action':action,'done':0,'failed':1,'error':'START_FAILED',**task})
+            if action=='import': self._import_keys.pop(args[0],None)
+            self._thread=None
+            raise ToolError('Storage task did not start') from None
+        return {'state':'RUNNING'}
 
     def _run(self, action, args):
         job={'state':'RUNNING','action':action,'done':0,'failed':0,'error':None,'results':[],
              'phase':'SCANNING' if action in ('scan','virtualize_all') else 'STARTING','current':None}
+        if action=='import': job['task_id']=args[2]
         try:
-            if action=='import': self.import_share(*args,job=job)
+            if action=='import': self.import_share(*args[:2],job=job)
             elif action=='scan': self.scan_actual(job)
             elif action=='cleanup': self.cleanup(job)
             elif action=='reconcile_purge': self.reconcile_purges(job)
@@ -470,12 +522,16 @@ class StorageManager:
             job['state']='DONE' if not job['failed'] else 'PARTIAL'
             if job['state']=='DONE': job['error']=None
         except InterruptedError: job['state']='INTERRUPTED'
-        except Exception: job['state']='FAILED';job['error']='STORAGE_FAILED';job['failed']+=1
+        except Exception as exc:
+            job['state']='FAILED';job['error']='STORAGE_FAILED';job['failed']+=1
+            if action=='import' and type(exc) is SafetyError and exc.args==('Share media limit',):
+                job['error']='SHARE_VIDEO_LIMIT'
         finally:
             job['current']=None;job['phase']='FINISHED'
             if 'total' in job: job['remaining']=max(0,job['total']-job['done']-job['failed'])
             self._job(job)
             with self.service._lock:
+                if action=='import': self._import_keys.pop(args[0],None)
                 self._thread=None
                 if self.service._rerun and not self.service._closed:
                     self.service._rerun=False
@@ -483,7 +539,7 @@ class StorageManager:
                     except Exception: pass
                 self.drain_pending()
 
-    def share_tree(self, code, password):
+    def share_tree(self, code, password, progress=None):
         stack=[('0','')]; seen=set(); files=[]
         while stack:
             cid,path=stack.pop()
@@ -491,19 +547,25 @@ class StorageManager:
             if cid in seen or len(seen)>=10000: raise SafetyError('Share traversal limit')
             seen.add(cid)
             for file in self.client.share_files(code,password,cid):
+                if self.service._stop.is_set(): raise InterruptedError()
                 relative='/'.join(filter(None,(path,file.name)))
                 if file.is_dir: stack.append((file.file_id,relative))
                 elif Path(file.name).suffix.lower() in self.config.media_extensions:
                     if not re.fullmatch(r'[A-F0-9]{40}',file.sha1) or file.size<=0:
                         raise SafetyError('Share media identity unavailable')
                     files.append((file,relative))
-                    if len(files)>1000: raise SafetyError('Share media limit')
+                    if len(files)>SHARE_VIDEO_LIMIT: raise SafetyError('Share media limit')
+                if progress: progress(len(seen),len(files))
         if not files: raise SafetyError('Share contains no media')
         return files
 
     def import_share(self, code, password, job):
         # Complete enumeration before adding any media or sending copy requests.
-        files=self.share_tree(code,password)
+        job['phase']='SCANNING';self._progress(job)
+        def progress(scanned,found):
+            job['scanned']=scanned;job['found']=found;self._progress(job)
+        files=self.share_tree(code,password,progress=progress)
+        job['phase']='IMPORTING';job['total']=len(files);self._progress(job)
         digest=hashlib.sha256(code.encode()).hexdigest()[:24]
         for file,relative in files:
             if self.service._stop.is_set(): raise InterruptedError()
@@ -1025,5 +1087,8 @@ class StorageManager:
             self._refresh_revision+=1
             if self._refresh_timer: self._refresh_timer.cancel(); self._refresh_timer=None
             self._pending_action=None; self._refresh_pending=False
+            for task in self._import_tasks:
+                if task['state']=='QUEUED': task['state']='INTERRUPTED'
+            self._import_queue.clear();self._import_keys.clear()
         if self._thread and self._thread is not threading.current_thread(): self._thread.join()
         with self._gate: pass
