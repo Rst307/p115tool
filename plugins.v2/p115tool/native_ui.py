@@ -34,6 +34,16 @@ def dispatch(plugin,route,payload):
                     'jobs':[],'account':{},'metrics':{},'daily':{},'cumulative':{}}
         service=plugin._service
         if not service: raise ToolError('Service unavailable')
+        if route=='data' and payload=={'kind':'telegram'}: return service.telegram.snapshot()
+        if route=='action' and set(payload)=={'action','settings'} and payload['action']=='telegram_settings':
+            return service.telegram.configure(payload['settings'])
+        if route=='action' and set(payload)=={'action','phone'} and payload['action']=='telegram_send_code':
+            return service.telegram.send_code(payload['phone'])
+        if route=='action' and set(payload)=={'action','code','password'} and payload['action']=='telegram_sign_in':
+            return service.telegram.sign_in(payload['code'],payload['password'])
+        if route=='action' and payload=={'action':'telegram_poll'}: return service.telegram.poll_now()
+        if route=='action' and set(payload)=={'action','id'} and payload['action']=='telegram_retry':
+            return service.telegram.retry(payload['id'])
         if route=='action' and payload=={'action':'generate'}: return service.start()
         if route=='action' and payload=={'action':'scan_storage'}: return service.storage.start('scan')
         if route=='action' and set(payload)=={'action','link','password'} and payload['action']=='import_share':

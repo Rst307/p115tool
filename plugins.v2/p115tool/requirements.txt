@@ -1,2 +1,4 @@
 p115client==0.0.9.7.2
 APScheduler>=3.11,<4
+Telethon==1.45.0
+python-socks[asyncio]>=2.7,<3

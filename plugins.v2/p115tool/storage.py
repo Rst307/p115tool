@@ -177,6 +177,8 @@ class StorageManager:
     def _import_progress(self, value):
         # Task summaries contain no share URL, extraction code or playback token.
         with self.service._lock:
+            telegram=getattr(self.service,'telegram',None)
+            if telegram: telegram.import_progress(value)
             for task in self._import_tasks:
                 if task['id']==value.get('task_id'):
                     task.update({key:value[key] for key in
@@ -204,8 +206,8 @@ class StorageManager:
         self._import_keys[args[0]]=task_id
         self._import_queue.append((*args,task_id))
         self.drain_pending()
-        if task['state']=='RUNNING': return {'state':'RUNNING'}
-        if task['state']=='FAILED': return {'state':'START_FAILED'}
+        if task['state']=='RUNNING': return {'state':'RUNNING','task_id':task_id}
+        if task['state']=='FAILED': return {'state':'START_FAILED','task_id':task_id}
         return {'state':'QUEUED','task_id':task_id,'position':len(self._import_queue)}
 
     def row(self, media_id):

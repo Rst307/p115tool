@@ -61,6 +61,8 @@ class Service:
             if old.get('state')=='RUNNING': old['state']='INTERRUPTED'; self._save_state(old)
             from .storage import StorageManager
             self.storage=StorageManager(self)
+            from .telegram import TelegramMonitor
+            self.telegram=TelegramMonitor(self)
         except Exception:
             if self._db is not None: self._db.close()
             self.client.close(); self._file_lock.close(); raise
@@ -316,6 +318,7 @@ class Service:
         from .iso_transfer import unregister
         unregister(self)
         if worker and worker is not threading.current_thread(): worker.join()
+        self.telegram.close()
         self.storage.close()
         with self._lock:
             if self._db is not None: self._db.close(); self._db=None

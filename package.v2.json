@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "实际与虚拟存储、分享临时转存、分类STRM及302播放",
     "labels": "115,STRM,媒体管理",
-    "version": "0.2.39",
+    "version": "0.2.40",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.2.40": "新增Telegram账号订阅已加入频道：提取115链接和提取码，持久去重、断点读取并排队虚拟导入；提供验证码/二步验证登录、代理、首次历史回看和失败重试，导入不转存",
       "v0.2.39": "分享导入支持忙碌时连续添加、FIFO队列与重复提交保护，显示逐项进度和最近结果；单分享上限提高至1万个视频，等待项重启不自动恢复，导入不转存",
       "v0.2.38": "分享下载显式使用chrome接口，避开SDK默认android实际映射Windows导致的99；保留链接域名、Cookie绑定拒绝与单字节验证，STRM冲突不覆盖",
       "v0.2.37": "转换失败显示固定原因、失败步骤和白名单接口；990001/99会话拒绝、911验证需求停止批次并停止分享只读重试；未知写仍保留检查点，保留脱敏上游诊断",

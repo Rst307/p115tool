@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+/dist/
+/data/
+/strm/
+*.session
+*.session-journal
+telegram-settings.json
+telegram-settings.json.tmp
