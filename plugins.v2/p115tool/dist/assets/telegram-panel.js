@@ -1,6 +1,7 @@
 import {importShared} from './__federation_fn_import-E6wRZccp.js';
 import {p as request, r as requestError} from './ui-8x_RroF5.js';
-const {h, ref, onMounted, onUnmounted} = await importShared('vue');
+const {h, ref, watch, nextTick, onMounted, onUnmounted} = await importShared('vue');
+let nextId=0;
 
 const labels = {
   DISABLED:'订阅已关闭', CONNECTING:'正在连接', LOGIN_REQUIRED:'请登录 Telegram 账号',
@@ -25,9 +26,11 @@ const labels = {
 const label = value => labels[value] || '请检查订阅或导入状态';
 
 export default {
-  name:'TelegramSubscriptions', props:{api:Object},
+  name:'TelegramSubscriptions', props:{api:Object,active:{type:Boolean,default:true}},
   setup(props) {
-    const opened=ref(false), loading=ref(false), busy=ref(false), loaded=ref(false);
+    const loading=ref(false), busy=ref(false), loaded=ref(false), section=ref('connection');
+    const sections=[['connection','账号连接'],['subscription','频道订阅'],['imports','导入记录']];
+    const id=`p115-telegram-${nextId++}`;
     const status=ref(null), error=ref(''), notice=ref('');
     const form=ref({enabled:false,api_id:'',api_hash:'',channels:'',interval:60,history_limit:0,proxy:'',clear_proxy:false});
     const phone=ref(''), code=ref(''), password=ref('');
@@ -74,29 +77,43 @@ export default {
         h('span',title),h('input',{...attrs,'aria-label':title,value:form.value[key],disabled:busy.value,
           onInput:e=>form.value[key]=e.target.value}),hint?h('small',hint):null]);
     }
-    onMounted(()=>{timer=setInterval(()=>{if(opened.value) refresh();},5000);});
+    function selectSection(event,index) {
+      let target;
+      if(event.key==='ArrowRight') target=(index+1)%sections.length;
+      if(event.key==='ArrowLeft') target=(index+sections.length-1)%sections.length;
+      if(event.key==='Home') target=0;
+      if(event.key==='End') target=sections.length-1;
+      if(target===undefined) return;
+      event.preventDefault();section.value=sections[target][0];
+      const tabs=event.currentTarget.parentElement;
+      nextTick(()=>tabs.querySelectorAll('[role="tab"]')[target]?.focus());
+    }
+    watch(()=>props.active,active=>{if(active) refresh();});
+    onMounted(()=>{if(props.active) refresh();timer=setInterval(()=>{if(props.active) refresh();},5000);});
     onUnmounted(()=>{disposed=true;clearInterval(timer);});
     return ()=>h('section',{class:'p115-ui p115-tg'},[
-      h('details',{open:opened.value,onToggle:e=>{opened.value=e.target.open;if(opened.value&&!loaded.value) refresh(true);}},[
-        h('summary','Telegram 频道自动导入'),
-        h('p','使用普通 Telegram 账号读取已加入的频道，自动提取115分享、虚拟整理并生成STRM。导入时不转存视频，播放时才临时转存。'),
+        h('nav',{class:'p115-tg-tabs',role:'tablist','aria-label':'Telegram 板块'},sections.map(([key,title],index)=>
+          h('button',{type:'button',role:'tab',id:`${id}-tab-${key}`,'aria-controls':`${id}-panel-${key}`,
+            'aria-selected':section.value===key,tabindex:section.value===key?0:-1,
+            onClick:()=>section.value=key,onKeydown:event=>selectSection(event,index)},title))),
         error.value?h('p',{role:'alert',class:'p115-tg-error'},error.value):null,
         notice.value?h('p',{role:'status',class:'p115-tg-notice'},notice.value):null,
-        status.value?h('p',{'aria-live':'polite'},`${label(status.value.state)} · 待处理 ${status.value.pending} 项${status.value.last_poll?' · 最近检查 '+new Date(status.value.last_poll*1000).toLocaleString():''}`):null,
+        status.value?h('div',{class:'p115-tg-status'},[
+          h('p',{'aria-live':'polite'},`${label(status.value.state)} · 待处理 ${status.value.pending} 项${status.value.last_poll?' · 最近检查 '+new Date(status.value.last_poll*1000).toLocaleString():''}`),
+          button('刷新状态',()=>refresh(),loading.value),
+        ]):null,
         loading.value&&!loaded.value?h('p','正在读取设置…'):null,
-        loaded.value?h('div',[
-          h('label',{class:'p115-tg-check'},[h('input',{type:'checkbox',checked:form.value.enabled,onChange:e=>form.value.enabled=e.target.checked}),'启用频道订阅']),
+        loaded.value?h('div',{role:'tabpanel',id:`${id}-panel-${section.value}`,'aria-labelledby':`${id}-tab-${section.value}`},[
+          section.value==='connection'?h('div',[
+          h('h3','账号连接'),
+          h('p','先保存 API 凭证，再登录用于读取频道的普通 Telegram 账号。'),
           h('div',{class:'p115-tg-grid'},[
             input('Telegram API ID','api_id',{inputmode:'numeric',hint:'在 my.telegram.org 的 API development tools 获取。'}),
             input('Telegram API Hash','api_hash',{type:'password',autocomplete:'new-password',placeholder:status.value.settings.api_hash_set?'已保存；留空保留':'32位 API Hash'}),
-            input('检查间隔（秒）','interval',{type:'number',min:30,max:3600}),
-            input('首次回看消息数','history_limit',{type:'number',min:0,max:500,hint:'默认0：从首次成功检查时的最新消息开始；1–500：首次导入最近消息。已有进度的频道继续读取新消息。'}),
           ]),
-          h('label',{class:'p115-tg-field'},[h('span','频道（每行一个，最多30个）'),h('textarea',{'aria-label':'频道（每行一个，最多30个）',rows:3,value:form.value.channels,placeholder:'@channel_name\nhttps://t.me/channel_name\n-1001234567890',onInput:e=>form.value.channels=e.target.value}),h('small','请先在此账号中加入频道。私有频道填写 -100 开头的频道ID；不接受邀请链接，不会自动加入。')]),
           input('Telegram 代理（可选）','proxy',{type:'password',autocomplete:'new-password',placeholder:status.value.settings.proxy_set?'已保存；留空保留':'socks5://host:1080 或 http://host:8080',hint:'填写 MoviePilot 容器能访问的地址，支持用户名与密码；代理只用于 Telegram。'}),
           h('label',{class:'p115-tg-check'},[h('input',{type:'checkbox',checked:form.value.clear_proxy,onChange:e=>form.value.clear_proxy=e.target.checked}),'清除已保存的代理']),
-          h('div',{class:'p115-tg-actions'},[button('保存订阅设置',save),button('立即检查',()=>action('telegram_poll'),!status.value.settings.enabled),button('刷新状态',()=>refresh())]),
-          h('p','订阅设置单独保存。先保存API凭证，再登录账号；启用订阅后自动处理频道中的115分享。'),
+          h('div',{class:'p115-tg-actions'},[button('保存连接设置',save)]),
           h('fieldset',{class:'p115-tg-login'},[
             h('legend',status.value.authorized?'Telegram 账号已登录':'登录 Telegram 账号'),
             h('label',{class:'p115-tg-field'},[h('span','手机号（含国家区号）'),h('input',{type:'tel',value:phone.value,autocomplete:'off',placeholder:'+8613800000000',onInput:e=>phone.value=e.target.value})]),
@@ -107,8 +124,21 @@ export default {
             ]),
             button('登录',()=>action('telegram_sign_in',{code:code.value.trim(),password:password.value}),!code.value&&!password.value),
           ]),
+          ]):null,
+          section.value==='subscription'?h('div',[
+          h('h3','频道订阅'),
+          h('p','自动提取115分享、虚拟整理并生成STRM。导入时不转存视频，播放时才临时转存。'),
+          h('label',{class:'p115-tg-check'},[h('input',{type:'checkbox',checked:form.value.enabled,onChange:e=>form.value.enabled=e.target.checked}),'启用频道订阅']),
+          h('label',{class:'p115-tg-field'},[h('span','频道（每行一个，最多30个）'),h('textarea',{'aria-label':'频道（每行一个，最多30个）',rows:4,value:form.value.channels,placeholder:'@channel_name\nhttps://t.me/channel_name\n-1001234567890',onInput:e=>form.value.channels=e.target.value}),h('small','请先在此账号中加入频道。私有频道填写 -100 开头的频道ID；不接受邀请链接，不会自动加入。')]),
+          h('div',{class:'p115-tg-grid'},[
+            input('检查间隔（秒）','interval',{type:'number',min:30,max:3600}),
+            input('首次回看消息数','history_limit',{type:'number',min:0,max:500,hint:'默认0：从首次成功检查时的最新消息开始；1–500：首次导入最近消息。已有进度的频道继续读取新消息。'}),
+          ]),
+          h('div',{class:'p115-tg-actions'},[button('保存订阅设置',save),button('立即检查',()=>action('telegram_poll'),!status.value.settings.enabled)]),
           status.value.channels.length?h('ul',status.value.channels.map(c=>h('li',{key:c.channel},`${c.channel}：${label(c.state)}`))):null,
-          h('h4','最近50项导入'),
+          ]):null,
+          section.value==='imports'?h('div',[
+          h('h3','最近50项导入'),
           h('p','相同分享与提取码只登记一次；失败项可手动重试。消息编辑、邀请链接及中转网页不自动解析。'),
           status.value.items.length?h('div',{class:'p115-tg-table-scroll'},[h('table',{class:'p115-tg-table'},[
             h('thead',[h('tr',['频道 / 消息','状态','成功 / 失败','操作'].map(text=>h('th',text)))]),
@@ -119,8 +149,8 @@ export default {
               h('td',['FAILED','PARTIAL','INTERRUPTED'].includes(item.state)&&item.error!=='EXTRACTION_AMBIGUOUS'?button('重试',()=>action('telegram_retry',{id:item.id})):null),
             ]))),
           ])]):h('p','暂无导入记录'),
+          ]):null,
         ]):null,
-      ]),
     ]);
   },
 };

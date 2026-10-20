@@ -16,6 +16,7 @@ DIST = ROOT / 'plugins.v2' / 'p115tool' / 'dist'
 def build():
     manifest = json.loads((DIST / 'manifest.json').read_text())
     for source, target in (('panel.js', 'telegram-panel.js'), ('config.js', 'telegram-config.js'),
+                           ('navigation.js', 'telegram-navigation.js'),
                            ('page.js', 'telegram-page.js'), ('telegram.css', 'telegram.css'),
                            ('remoteEntry.js', 'remoteEntry.js')):
         (DIST / 'assets' / target).write_bytes((SOURCE / source).read_bytes())
