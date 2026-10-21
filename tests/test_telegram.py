@@ -77,6 +77,7 @@ class MonitorTests(unittest.TestCase):
         self.drive = Drive()
         self.service = Service(self.cfg, client=self.drive, virtual_organizer=lambda p:'电视剧/Example/Season 01/'+Path(p).name)
         self.monitor = self.service.telegram
+        self.monitor.settings['mode'] = 'account'
 
     def tearDown(self):
         self.service.close(); self.temp.cleanup()

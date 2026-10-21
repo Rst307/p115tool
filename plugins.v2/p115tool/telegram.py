@@ -1,4 +1,4 @@
-"""Read joined Telegram channels and feed the virtual-only share import queue.
+"""Read public previews or joined Telegram channels into virtual share imports.
 
 No bot, channel joins, outbound messages, media downloads or 115 writes here.
 Credentials stay in private local files; public state contains fixed error codes.
@@ -21,7 +21,7 @@ from .models import ToolError
 URL = re.compile(r'https?://[^\s<>"\'，。；）)\]】]+', re.I)
 PASSWORD = re.compile(r'(?:提取码|提取密码|访问码|访问密码|密码|口令|pwd|password)\s*[:：=]?\s*([A-Za-z0-9]{4})(?![A-Za-z0-9])', re.I)
 BACKLOG_LIMIT = 1000
-DEFAULTS = {'enabled': False, 'api_id': 0, 'api_hash': '', 'channels': [],
+DEFAULTS = {'enabled': False, 'mode': 'web', 'api_id': 0, 'api_hash': '', 'channels': [],
             'interval': 60, 'history_limit': 0, 'proxy': ''}
 
 
@@ -30,6 +30,7 @@ def normalize_channel(value):
     value = value.strip()
     if value.startswith('https://t.me/'):
         value = value[len('https://t.me/'):].rstrip('/')
+        if value.startswith('s/'): value = value[2:]
     if value.startswith('@'): value = value[1:]
     if re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{3,31}', value): return '@' + value.lower()
     if re.fullmatch(r'-100[1-9][0-9]{0,15}', value): return value
@@ -111,7 +112,7 @@ class TelegramMonitor:
         self.settings = dict(DEFAULTS, channels=[])
         self._guard = threading.RLock(); self._thread = None; self._loop = None
         self._ready = threading.Event(); self._closing = False
-        self._client = None; self._phone = ''; self._phone_hash = ''; self._login_until = 0
+        self._client = None; self._web = None; self._phone = ''; self._phone_hash = ''; self._login_until = 0
         self._state = 'DISABLED'; self._error = None; self._last_poll = None
         self._channels = []; self._next_poll = 0
         self._authorized = False; self._poll_task = None
@@ -139,6 +140,9 @@ class TelegramMonitor:
         if not isinstance(data, dict) or set(data) - set(DEFAULTS) - {'clear_proxy'}:
             raise ValueError('Invalid Telegram settings')
         result = {**DEFAULTS, **data}
+        # Existing saved settings and cached account-mode pages remain valid.
+        if 'mode' not in data: result['mode'] = self.settings['mode'] if preserve else 'account'
+        if result['mode'] not in ('web', 'account'): raise ValueError('Invalid Telegram mode')
         if type(result['enabled']) is not bool: raise ValueError('Invalid Telegram switch')
         for key, low, high in (('api_id', 0, 2147483647), ('interval', 30, 3600), ('history_limit', 0, 500)):
             value = result[key]
@@ -151,19 +155,21 @@ class TelegramMonitor:
         if not isinstance(result['channels'], list) or len(result['channels']) > 30:
             raise ValueError('Invalid Telegram channels')
         result['channels'] = list(dict.fromkeys(normalize_channel(c) for c in result['channels']))
+        if result['mode'] == 'web' and any(not c.startswith('@') for c in result['channels']):
+            raise ValueError('Public channel names required')
         if type(data.get('clear_proxy', False)) is not bool: raise ValueError('Invalid proxy switch')
         if not isinstance(result['proxy'], str): raise ValueError('Invalid proxy')
         if preserve and not result['proxy']: result['proxy'] = self.settings['proxy']
         if data.get('clear_proxy'): result['proxy'] = ''
         proxy_options(result['proxy'])
         result.pop('clear_proxy', None)
-        if result['enabled'] and (not result['api_id'] or not result['api_hash'] or not result['channels']):
+        if result['enabled'] and (not result['channels'] or result['mode'] == 'account' and (not result['api_id'] or not result['api_hash'])):
             raise ValueError('Telegram configuration required')
         return result
 
     def snapshot(self):
         with self._guard:
-            settings = {k: self.settings[k] for k in ('enabled', 'api_id', 'channels', 'interval', 'history_limit')}
+            settings = {k: self.settings[k] for k in ('enabled', 'mode', 'api_id', 'channels', 'interval', 'history_limit')}
             settings.update(api_hash_set=bool(self.settings['api_hash']), proxy_set=bool(self.settings['proxy']))
             state = {'settings': settings, 'state': self._state, 'error': self._error,
                      'authorized': self._authorized, 'last_poll': self._last_poll,
@@ -218,7 +224,7 @@ class TelegramMonitor:
         return self._submit(self._configure, candidate)
 
     async def _configure(self, candidate):
-        changed = any(candidate[k] != self.settings[k] for k in ('api_id', 'api_hash', 'proxy'))
+        changed = any(candidate[k] != self.settings[k] for k in ('mode', 'api_id', 'api_hash', 'proxy'))
         private_write(self.settings_path, json.dumps(candidate))
         if changed: await self._disconnect()
         with self._guard:
@@ -229,6 +235,7 @@ class TelegramMonitor:
         return {'state': 'SAVED'}
 
     async def _connect(self):
+        if self.settings['mode'] != 'account': raise ValueError('Account mode required')
         if not self.settings['api_id'] or not self.settings['api_hash']:
             raise ValueError('Telegram configuration required')
         if self._client is None:
@@ -246,12 +253,17 @@ class TelegramMonitor:
 
     async def _disconnect(self):
         client, self._client = self._client, None
+        web, self._web = self._web, None
         self._authorized = False; self._phone = ''; self._phone_hash = ''; self._login_until = 0
         if client:
             try: await asyncio.wait_for(client.disconnect(), 10)
             except Exception: pass
+        if web:
+            try: await asyncio.wait_for(web.close(), 10)
+            except Exception: pass
 
     def send_code(self, phone):
+        if self.settings['mode'] != 'account': raise ValueError('Account mode required')
         if not isinstance(phone, str) or not re.fullmatch(r'\+[1-9][0-9]{5,14}', phone):
             raise ValueError('Invalid Telegram phone')
         return self._submit(self._send_code, phone)
@@ -270,6 +282,7 @@ class TelegramMonitor:
         return {'state': 'CODE_SENT'}
 
     def sign_in(self, code, password):
+        if self.settings['mode'] != 'account': raise ValueError('Account mode required')
         if not isinstance(code, str) or (code and not re.fullmatch(r'[0-9]{3,8}', code)):
             raise ValueError('Invalid Telegram code')
         if not isinstance(password, str) or len(password) > 1024 or not (code or password):
@@ -303,11 +316,12 @@ class TelegramMonitor:
             'UserDeactivatedError': 'LOGIN_REQUIRED', 'ModuleNotFoundError': 'DEPENDENCY_MISSING',
             'FloodWaitError': 'RATE_LIMITED', 'PhoneNumberFloodError': 'RATE_LIMITED',
             'AuthRestartError': 'LOGIN_REQUIRED'}
+        from .telegram_web import PublicChannelError
         with self._guard:
-            self._error = codes.get(name, 'TELEGRAM_UNAVAILABLE')
+            self._error = exc.code if isinstance(exc, PublicChannelError) else codes.get(name, 'TELEGRAM_UNAVAILABLE')
             self._state = self._error
             if self._error == 'LOGIN_REQUIRED': self._authorized = False
-            delay = max(60, getattr(exc, 'seconds', 60)) if name == 'FloodWaitError' else 60
+            delay = exc.retry_after if isinstance(exc, PublicChannelError) else max(60, getattr(exc, 'seconds', 60)) if name == 'FloodWaitError' else 60
             if self._error == 'RATE_LIMITED': self._rate_until = time.time() + delay
             self._next_poll = time.time() + delay
 
@@ -332,6 +346,8 @@ class TelegramMonitor:
 
     async def _poll(self):
         self._next_poll = time.time() + self.settings['interval']
+        if self.settings['mode'] == 'web':
+            return await self._poll_public()
         if self._phone_hash and time.time() < self._login_until: return
         self._sync_tasks()
         self._drain()
@@ -367,6 +383,60 @@ class TelegramMonitor:
         with self._guard:
             self._channels = statuses; self._last_poll = time.time(); self._error = None
             self._state = 'WATCHING' if statuses and all(c['state'] == 'WATCHING' for c in statuses) else 'CHANNEL_ATTENTION'
+
+    async def _poll_public(self):
+        from .telegram_web import PublicChannelReader, PublicChannelError
+        self._authorized = False
+        self._sync_tasks(); self._drain()
+        if self._web is None: self._web = PublicChannelReader(self.settings['proxy'])
+        statuses = []
+        for reference in self.settings['channels']:
+            if self._closing or self.service._stop.is_set(): break
+            try:
+                await self._read_public_channel(reference)
+                statuses.append({'channel': reference, 'state': 'WATCHING'})
+            except PublicChannelError as exc:
+                if exc.code == 'RATE_LIMITED': raise
+                statuses.append({'channel': reference, 'state': exc.code})
+        self._sync_tasks(); self._drain()
+        with self._guard:
+            self._channels = statuses; self._last_poll = time.time(); self._error = None
+            self._state = 'WATCHING' if statuses and all(c['state'] == 'WATCHING' for c in statuses) else 'CHANNEL_ATTENTION'
+
+    async def _read_public_channel(self, reference):
+        from .telegram_web import PublicChannelError
+        key = 'web:' + reference
+        checkpoint = self.service.query('SELECT message_id FROM telegram_cursors WHERE channel=?', (key,), one=True)
+        if checkpoint is None:
+            page = await self._web.page(reference)
+            messages = page.messages
+            if not messages:
+                self._cursor(key, 0); return
+            if not self.settings['history_limit']:
+                self._cursor(key, messages[-1].id); return
+            found = {m.id: m for m in messages}
+            for _ in range(29):
+                if len(found) >= self.settings['history_limit'] or not page.more_before: break
+                boundary = min(found)
+                page = await self._web.page(reference, before=boundary)
+                older = [m for m in page.messages if m.id < boundary]
+                if not older:
+                    if page.more_before: raise PublicChannelError('WEB_PAGE_INVALID')
+                    break
+                found.update((m.id, m) for m in older)
+            if len(found) < self.settings['history_limit'] and page.more_before:
+                raise PublicChannelError('WEB_HISTORY_LIMIT')
+            messages = [found[i] for i in sorted(found)][-self.settings['history_limit']:]
+            self._cursor(key, messages[0].id-1)
+        else:
+            # The public preview supports ascending pages after a message ID.
+            # One page per tick naturally bounds catch-up without skipping gaps.
+            page = await self._web.page(reference, after=checkpoint['message_id'])
+            messages = [m for m in page.messages if m.id > checkpoint['message_id']]
+        for message in messages:
+            if self._closing or self.service._stop.is_set(): return
+            if not self.ingest(reference, message): return
+            self._cursor(key, message.id)
 
     async def _read_channel(self, client, entity, channel):
         checkpoint = self.service.query('SELECT message_id FROM telegram_cursors WHERE channel=?', (channel,), one=True)

@@ -9,7 +9,7 @@
 .p115-tg p,.p115-tg small{line-height:1.7}.p115-tg p{margin:12px 0}
 .p115-tg-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .p115-tg-field{display:flex;flex-direction:column;gap:6px;margin:12px 0;min-width:0}
-.p115-tg-field input,.p115-tg-field textarea{width:100%;padding:10px 12px;border:1px solid rgba(128,128,128,.5);border-radius:6px;background:transparent;color:inherit;font:inherit;box-sizing:border-box}
+.p115-tg-field input,.p115-tg-field textarea,.p115-tg-field select{width:100%;padding:10px 12px;border:1px solid rgba(128,128,128,.5);border-radius:6px;background:transparent;color:inherit;font:inherit;box-sizing:border-box}
 .p115-tg-field textarea{resize:vertical}.p115-tg-field small,.p115-tg-table small{display:block;opacity:.8}
 .p115-tg-check{display:flex;gap:8px;align-items:center;margin:12px 0}.p115-tg-check input{width:18px;height:18px}
 .p115-tg-actions{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}

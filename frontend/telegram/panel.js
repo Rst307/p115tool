@@ -15,6 +15,11 @@ const labels = {
   USER_ACCOUNT_REQUIRED:'需要普通 Telegram 账号', DEPENDENCY_MISSING:'缺少依赖，请重新安装插件并重启 MoviePilot',
   RATE_LIMITED:'Telegram 要求限流等待，插件稍后再读取，请勿连续尝试登录',
   TELEGRAM_UNAVAILABLE:'连接失败，请检查网络、代理、API凭证和账号会话',
+  WEB_CHANNEL_UNAVAILABLE:'公开网页不可用，请检查频道名；私有或受限制频道无法用网页模式读取',
+  WEB_REQUEST_FAILED:'公开网页连接失败，请检查MoviePilot网络或Telegram代理',
+  WEB_PAGE_INVALID:'公开网页内容无法识别，频道进度已保留，请稍后重试',
+  WEB_PAGE_TOO_LARGE:'公开网页超过读取大小上限，频道进度已保留',
+  WEB_HISTORY_LIMIT:'首次回看需要读取过多网页，请减少回看数量后再保存',
   PENDING:'待导入', QUEUED:'已排队', RUNNING:'导入中', DONE:'已完成', PARTIAL:'部分失败', FAILED:'失败',
   INTERRUPTED:'已中断', RESTARTED:'重启后需手动重试', TASK_UNAVAILABLE:'任务结果不可用，需手动核实后重试',
   EXTRACTION_AMBIGUOUS:'消息包含多个提取码，请手动复制链接和提取码到存储页导入',
@@ -29,10 +34,10 @@ export default {
   name:'TelegramSubscriptions', props:{api:Object,active:{type:Boolean,default:true}},
   setup(props) {
     const loading=ref(false), busy=ref(false), loaded=ref(false), section=ref('connection');
-    const sections=[['connection','账号连接'],['subscription','频道订阅'],['imports','导入记录']];
+    const sections=[['connection','连接设置'],['subscription','频道订阅'],['imports','导入记录']];
     const id=`p115-telegram-${nextId++}`;
     const status=ref(null), error=ref(''), notice=ref('');
-    const form=ref({enabled:false,api_id:'',api_hash:'',channels:'',interval:60,history_limit:0,proxy:'',clear_proxy:false});
+    const form=ref({enabled:false,mode:'web',api_id:'',api_hash:'',channels:'',interval:60,history_limit:0,proxy:'',clear_proxy:false});
     const phone=ref(''), code=ref(''), password=ref('');
     let timer, disposed=false;
     async function refresh(initial=false) {
@@ -64,7 +69,7 @@ export default {
     }
     function save() {
       const f=form.value;
-      action('telegram_settings',{settings:{enabled:f.enabled,api_id:f.api_id || 0,api_hash:f.api_hash.trim(),
+      action('telegram_settings',{settings:{enabled:f.enabled,mode:f.mode,api_id:f.api_id || 0,api_hash:f.api_hash.trim(),
         channels:f.channels.split(/[\n,，]/).map(s=>s.trim()).filter(Boolean),interval:f.interval,
         history_limit:f.history_limit,proxy:f.proxy.trim(),clear_proxy:f.clear_proxy}});
     }
@@ -105,16 +110,21 @@ export default {
         loading.value&&!loaded.value?h('p','正在读取设置…'):null,
         loaded.value?h('div',{role:'tabpanel',id:`${id}-panel-${section.value}`,'aria-labelledby':`${id}-tab-${section.value}`},[
           section.value==='connection'?h('div',[
-          h('h3','账号连接'),
-          h('p','先保存 API 凭证，再登录用于读取频道的普通 Telegram 账号。'),
-          h('div',{class:'p115-tg-grid'},[
+          h('h3','连接设置'),
+          h('label',{class:'p115-tg-field'},[h('span','订阅方式'),h('select',{'aria-label':'订阅方式',value:form.value.mode,disabled:busy.value,
+            onChange:event=>{form.value.mode=event.target.value;phone.value='';code.value='';password.value='';}},[
+              h('option',{value:'web'},'公开网页（免 API、免登录）'),
+              h('option',{value:'account'},'Telegram 账号（需要 API）'),
+            ])]),
+          h('p',form.value.mode==='web'?'直接读取公开频道网页，不需要申请 API 或登录 Telegram。保存连接设置后，到“频道订阅”添加公开频道并启用。':'先保存 API 凭证，再登录用于读取频道的普通 Telegram 账号。'),
+          form.value.mode==='account'?h('div',{class:'p115-tg-grid'},[
             input('Telegram API ID','api_id',{inputmode:'numeric',hint:'在 my.telegram.org 的 API development tools 获取。'}),
             input('Telegram API Hash','api_hash',{type:'password',autocomplete:'new-password',placeholder:status.value.settings.api_hash_set?'已保存；留空保留':'32位 API Hash'}),
-          ]),
+          ]):null,
           input('Telegram 代理（可选）','proxy',{type:'password',autocomplete:'new-password',placeholder:status.value.settings.proxy_set?'已保存；留空保留':'socks5://host:1080 或 http://host:8080',hint:'填写 MoviePilot 容器能访问的地址，支持用户名与密码；代理只用于 Telegram。'}),
           h('label',{class:'p115-tg-check'},[h('input',{type:'checkbox',checked:form.value.clear_proxy,onChange:e=>form.value.clear_proxy=e.target.checked}),'清除已保存的代理']),
           h('div',{class:'p115-tg-actions'},[button('保存连接设置',save)]),
-          h('fieldset',{class:'p115-tg-login'},[
+          form.value.mode==='account'?h('fieldset',{class:'p115-tg-login'},[
             h('legend',status.value.authorized?'Telegram 账号已登录':'登录 Telegram 账号'),
             h('label',{class:'p115-tg-field'},[h('span','手机号（含国家区号）'),h('input',{type:'tel',value:phone.value,autocomplete:'off',placeholder:'+8613800000000',onInput:e=>phone.value=e.target.value})]),
             button('发送验证码',()=>action('telegram_send_code',{phone:phone.value.trim()}),!phone.value),
@@ -123,17 +133,18 @@ export default {
               h('label',{class:'p115-tg-field'},[h('span','二步验证密码（提示需要时填写）'),h('input',{type:'password',value:password.value,autocomplete:'new-password',onInput:e=>password.value=e.target.value})]),
             ]),
             button('登录',()=>action('telegram_sign_in',{code:code.value.trim(),password:password.value}),!code.value&&!password.value),
-          ]),
+          ]):null,
           ]):null,
           section.value==='subscription'?h('div',[
           h('h3','频道订阅'),
           h('p','自动提取115分享、虚拟整理并生成STRM。导入时不转存视频，播放时才临时转存。'),
           h('label',{class:'p115-tg-check'},[h('input',{type:'checkbox',checked:form.value.enabled,onChange:e=>form.value.enabled=e.target.checked}),'启用频道订阅']),
-          h('label',{class:'p115-tg-field'},[h('span','频道（每行一个，最多30个）'),h('textarea',{'aria-label':'频道（每行一个，最多30个）',rows:4,value:form.value.channels,placeholder:'@channel_name\nhttps://t.me/channel_name\n-1001234567890',onInput:e=>form.value.channels=e.target.value}),h('small','请先在此账号中加入频道。私有频道填写 -100 开头的频道ID；不接受邀请链接，不会自动加入。')]),
+          h('label',{class:'p115-tg-field'},[h('span','频道（每行一个，最多30个）'),h('textarea',{'aria-label':'频道（每行一个，最多30个）',rows:4,value:form.value.channels,placeholder:form.value.mode==='web'?'@channel_name\nhttps://t.me/channel_name':'@channel_name\nhttps://t.me/channel_name\n-1001234567890',onInput:e=>form.value.channels=e.target.value}),h('small',form.value.mode==='web'?'只需填写公开频道名或频道网址，无需加入频道。支持 t.me/s/频道名；私有频道、邀请链接及受限网页不可读取。':'请先在此账号中加入频道。私有频道填写 -100 开头的频道ID；不接受邀请链接，不会自动加入。')]),
           h('div',{class:'p115-tg-grid'},[
             input('检查间隔（秒）','interval',{type:'number',min:30,max:3600}),
             input('首次回看消息数','history_limit',{type:'number',min:0,max:500,hint:'默认0：从首次成功检查时的最新消息开始；1–500：首次导入最近消息。已有进度的频道继续读取新消息。'}),
           ]),
+          form.value.mode==='web'?h('p','网页模式按页续读新消息；频道不存在、网页受限或解析失败时保留进度并提示。消息编辑及网页未公开的内容不自动获取。'):null,
           h('div',{class:'p115-tg-actions'},[button('保存订阅设置',save),button('立即检查',()=>action('telegram_poll'),!status.value.settings.enabled)]),
           status.value.channels.length?h('ul',status.value.channels.map(c=>h('li',{key:c.channel},`${c.channel}：${label(c.state)}`))):null,
           ]):null,
