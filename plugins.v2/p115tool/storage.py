@@ -81,8 +81,9 @@ def parse_share(link, password):
     if not isinstance(link,str) or not isinstance(password,str) or len(link)>2048:
         raise ValueError('Invalid share input')
     parsed = urlsplit(link.strip())
+    # A fragment is a client-side label, never an extraction code or fetch target.
     if (parsed.scheme not in ('http','https') or parsed.hostname not in ('115.com','www.115.com','115cdn.com')
-            or parsed.username or parsed.password or parsed.port not in (None,80,443) or parsed.fragment
+            or parsed.username or parsed.password or parsed.port not in (None,80,443)
             or any(ord(c)<33 for c in link.strip())):
         raise ValueError('Invalid 115 share URL')
     match = re.fullmatch(r'/s/([A-Za-z0-9]{6,64})/?',parsed.path)
@@ -152,6 +153,8 @@ class StorageManager:
                 db.execute('UPDATE resource_copies SET stage=? WHERE stage=?',(after,before))
         job=self.job()
         if job['state']=='RUNNING': job['state']='INTERRUPTED'; self._job(job)
+        from .quality import VirtualUpgrades
+        self.upgrades=VirtualUpgrades(self)
 
     @property
     def busy(self): return bool(self._thread and self._thread.is_alive())
@@ -182,7 +185,7 @@ class StorageManager:
             for task in self._import_tasks:
                 if task['id']==value.get('task_id'):
                     task.update({key:value[key] for key in
-                        ('state','done','failed','total','error','phase','scanned','found') if key in value})
+                        ('state','done','failed','total','error','phase','scanned','found','upgraded','skipped') if key in value})
                     if task['state'] not in ('QUEUED','RUNNING'): self._trim_import_tasks()
                     break
 
@@ -204,7 +207,7 @@ class StorageManager:
         self._import_tasks.append(task)
         self._trim_import_tasks()
         self._import_keys[args[0]]=task_id
-        self._import_queue.append((*args,task_id))
+        self._import_queue.append((*args[:2],task_id,args[2] if len(args)>2 else False))
         self.drain_pending()
         if task['state']=='RUNNING': return {'state':'RUNNING','task_id':task_id}
         if task['state']=='FAILED': return {'state':'START_FAILED','task_id':task_id}
@@ -223,13 +226,15 @@ class StorageManager:
         snapshot=self.service.query('SELECT * FROM actual_inventory_state WHERE id=1',one=True)
         current=bool(snapshot and snapshot['scope']==self.inventory_scope())
         path="CASE WHEN s.kind='VIRTUAL' THEN f.relative_path ELSE a.path END"
-        where="WHERE NOT EXISTS (SELECT 1 FROM removed_storage_records r WHERE r.media_id=f.file_id) AND (s.kind='VIRTUAL' OR (? AND a.media_id IS NOT NULL)) AND (?='ALL' OR coalesce(s.kind,'ACTUAL')=?) AND instr(lower("+path+"),lower(?))>0"
+        where="WHERE NOT EXISTS (SELECT 1 FROM virtual_editions e WHERE e.media_id=f.file_id AND e.stable_id!=e.media_id) AND NOT EXISTS (SELECT 1 FROM removed_storage_records r WHERE r.media_id=f.file_id) AND (s.kind='VIRTUAL' OR (? AND a.media_id IS NOT NULL)) AND (?='ALL' OR coalesce(s.kind,'ACTUAL')=?) AND instr(lower("+path+"),lower(?))>0"
         args=(current,kind,kind,search)
         joins=' FROM strm_files f LEFT JOIN resource_storage s ON s.media_id=f.file_id LEFT JOIN actual_inventory a ON a.media_id=f.file_id '
         total=self.service.query('SELECT count(*) n'+joins+where,args,one=True)['n']
-        items=self.service.query("SELECT f.file_id id,f.name,"+path+" path,coalesce(s.kind,'ACTUAL') kind,"
+        items=self.service.query("SELECT f.file_id id,coalesce(active.name,f.name) name,"+path+" path,coalesce(s.kind,'ACTUAL') kind,"
             "coalesce(s.stage,'READY') stage,c.stage copy_state,c.received_at,c.lease_until FROM strm_files f "
-            'LEFT JOIN resource_storage s ON s.media_id=f.file_id LEFT JOIN actual_inventory a ON a.media_id=f.file_id LEFT JOIN resource_copies c ON c.media_id=f.file_id '
+            'LEFT JOIN resource_storage s ON s.media_id=f.file_id LEFT JOIN actual_inventory a ON a.media_id=f.file_id '
+            'LEFT JOIN virtual_selections v ON v.stable_id=f.file_id LEFT JOIN strm_files active ON active.file_id=v.selected_id '
+            'LEFT JOIN resource_copies c ON c.media_id=coalesce(v.selected_id,f.file_id) '
             +where+' ORDER BY f.relative_path,f.file_id LIMIT 50 OFFSET ?',(*args,(page-1)*50))
         for item in items:
             item['expires_at']=(item.pop('received_at') or 0)+self.config.temp_days*86400 if item['copy_state']=='READY' else None
@@ -393,8 +398,9 @@ class StorageManager:
     def start(self, action, payload=None):
         payload=payload or {}
         if action=='import':
-            if set(payload)!={'link','password'}: raise ValueError('Invalid import')
-            args=parse_share(payload['link'],payload['password'])
+            if set(payload) not in ({'link','password'},{'link','password','auto_upgrade'}) or type(payload.get('auto_upgrade',False)) is not bool:
+                raise ValueError('Invalid import')
+            args=(*parse_share(payload['link'],payload['password']),payload.get('auto_upgrade',False))
         elif action=='virtualize':
             if (set(payload) not in ({'ids','delete_source'},{'ids','delete_source','purge_source'})
                     or payload.get('delete_source') is not True or type(payload.get('purge_source',False)) is not bool):
@@ -449,7 +455,7 @@ class StorageManager:
              'phase':'SCANNING' if action in ('scan','virtualize_all') else 'STARTING','current':None}
         if action=='import': job['task_id']=args[2]
         try:
-            if action=='import': self.import_share(*args[:2],job=job)
+            if action=='import': self.import_share(*args[:2],job=job,auto_upgrade=args[3])
             elif action=='scan': self.scan_actual(job)
             elif action=='cleanup': self.cleanup(job)
             elif action=='reconcile_purge': self.reconcile_purges(job)
@@ -561,12 +567,17 @@ class StorageManager:
         if not files: raise SafetyError('Share contains no media')
         return files
 
-    def import_share(self, code, password, job):
+    def import_share(self, code, password, job, auto_upgrade=False):
         # Complete enumeration before adding any media or sending copy requests.
         job['phase']='SCANNING';self._progress(job)
         def progress(scanned,found):
             job['scanned']=scanned;job['found']=found;self._progress(job)
         files=self.share_tree(code,password,progress=progress)
+        members={}
+        for file,_ in files:
+            members.setdefault((file.name,file.size,file.sha1),[]).append(file.file_id)
+        if auto_upgrade: self.upgrades.index_existing()
+        job.update(upgraded=0,skipped=0)
         job['phase']='IMPORTING';job['total']=len(files);self._progress(job)
         digest=hashlib.sha256(code.encode()).hexdigest()[:24]
         for file,relative in files:
@@ -574,11 +585,16 @@ class StorageManager:
             media_id='v_'+digest+'_'+file.file_id
             try:
                 existing=self.row(media_id)
-                if existing and (existing['share_fid']!=file.file_id or existing['share_code']!=code):
+                if existing and (existing['share_fid']!=file.file_id or existing['share_code']!=code
+                        or existing['size']!=file.size or existing['sha1']!=file.sha1):
                     raise SafetyError('Share mapping changed')
                 destination=self.service.virtual_organizer(relative)
                 safe_parts(destination)
                 if self.service._stop.is_set(): raise InterruptedError()
+                outcome=self.upgrades.consider(media_id,file,destination,relative,code,password,auto_upgrade,members)
+                if outcome:
+                    job[outcome]+=1;job['done']+=1;self._job(job)
+                    continue
                 record=RemoteFile(media_id,file.name,file.size,file.sha1,'0','',is_dir=False)
                 self.service.register(record,destination)
                 self.service.query("INSERT INTO resource_storage(media_id,kind,stage,share_code,password,share_fid) "
@@ -586,6 +602,7 @@ class StorageManager:
                     (media_id,code,password,file.file_id))
                 row=self.row(media_id)
                 self.service.write_output(media_id,row['relative_path'],row['token'])
+                self.upgrades.remember(media_id,destination,relative)
                 job['done']+=1
             except InterruptedError: raise
             except Exception:
@@ -595,9 +612,12 @@ class StorageManager:
     def verify_share(self, row):
         candidates=[file for file,_ in self.share_tree(row['share_code'],row['password']) if matches(file,row)]
         if len(candidates)!=1: raise SafetyError('Share identity is ambiguous')
-        link=self.client.share_link(row['share_code'],row['password'],candidates[0].file_id,UA)
-        self.client.probe_range(link,UA,row['size'])
+        self.probe_share_member(row,candidates[0].file_id)
         return candidates[0].file_id
+
+    def probe_share_member(self, row, file_id):
+        link=self.client.share_link(row['share_code'],row['password'],file_id,UA)
+        self.client.probe_range(link,UA,row['size'])
 
     def wait_share(self, row, progress):
         # Retry only read validation, never creation, deletion or identity errors.
@@ -937,6 +957,7 @@ class StorageManager:
             return self.client.normal_link(source['pickcode'],ua).url
         with self._gate:
             if self.service._stop.is_set(): raise ToolError('Service stopped')
+            media_id=self.upgrades.playback_source(media_id)
             row=self.row(media_id)
             if not row or (row['kind']=='ACTUAL' and row['stage'] not in ('SOURCE_DELETE_UNKNOWN','SOURCE_DELETING')):
                 source=row or self.service.query('SELECT * FROM strm_files WHERE file_id=?',(media_id,),one=True)
@@ -1073,7 +1094,7 @@ class StorageManager:
         return {'state':'ATTACHED'}
 
     def virtual_rows(self):
-        return self.service.query("SELECT f.* FROM strm_files f JOIN resource_storage s ON s.media_id=f.file_id WHERE s.kind='VIRTUAL'")
+        return self.service.query("SELECT f.* FROM strm_files f JOIN resource_storage s ON s.media_id=f.file_id WHERE s.kind='VIRTUAL' AND NOT EXISTS (SELECT 1 FROM virtual_editions e WHERE e.media_id=f.file_id AND e.stable_id!=e.media_id)")
 
     def skip_file(self, fid):
         return bool(self.service.query("SELECT media_id FROM resource_storage WHERE media_id=? AND kind='VIRTUAL' UNION ALL SELECT media_id FROM resource_copies WHERE file_id=?",(fid,fid),one=True))

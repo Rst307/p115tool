@@ -91,7 +91,7 @@ class Service:
 
     def snapshot(self):
         with self._lock:
-            return {**self._state(),'count':self.query('SELECT count(*) count FROM strm_files',one=True)['count']}
+            return {**self._state(),'count':self.query('SELECT count(*) count FROM strm_files f WHERE NOT EXISTS (SELECT 1 FROM virtual_editions e WHERE e.media_id=f.file_id AND e.stable_id!=e.media_id)',one=True)['count']}
 
     def start(self,rerun=False):
         with self._lock:

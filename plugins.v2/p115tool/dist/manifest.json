@@ -7,7 +7,7 @@
     "telegram-config.js": "cc4556ff153ba73b0f5f913c5d639757930afdbc42f79fd0a5e31315fd47b068",
     "telegram-navigation.js": "7f52b4d6606d07a16bdbe43d9267fecf4adf8cd96de08fd267fd8229d6589d1a",
     "telegram-page.js": "eebeff15abc846dd54c44a53757e00aa668198f99b876eadbd32b698a76d8305",
-    "telegram-panel.js": "d2ae53fdd7ed447a4af505551a353b595f2f3650a683f6cfd435bfa6ef256680",
+    "telegram-panel.js": "fb09623db4f55bab376c3b90251178f21d969b825c8eb5e00536bbecb402aff2",
     "telegram.css": "3e3b99468f02c182bfe570e5e97e38945b49485b1c59ddb939f2263db96277a4",
     "ui-8x_RroF5.js": "553c8d123629b6b0973f04aad53ed63c24dca9e6d54f90a8d72d39d349903fb3",
     "ui-8ywdPfsL.css": "2ef95b8b815c42df3917d25905df1d3adeb130053ee97be788d2c60f59650136"
@@ -29,7 +29,7 @@
     "frontend/telegram/config.js": "cc4556ff153ba73b0f5f913c5d639757930afdbc42f79fd0a5e31315fd47b068",
     "frontend/telegram/navigation.js": "7f52b4d6606d07a16bdbe43d9267fecf4adf8cd96de08fd267fd8229d6589d1a",
     "frontend/telegram/page.js": "eebeff15abc846dd54c44a53757e00aa668198f99b876eadbd32b698a76d8305",
-    "frontend/telegram/panel.js": "d2ae53fdd7ed447a4af505551a353b595f2f3650a683f6cfd435bfa6ef256680",
+    "frontend/telegram/panel.js": "fb09623db4f55bab376c3b90251178f21d969b825c8eb5e00536bbecb402aff2",
     "frontend/telegram/remoteEntry.js": "68246253b0b539a5ff86b05ba65ce12b7585838ed80f3b5a7ba5c34c4a5bc7f4",
     "frontend/telegram/telegram.css": "3e3b99468f02c182bfe570e5e97e38945b49485b1c59ddb939f2263db96277a4",
     "tools/build_telegram_ui.py": "5fad5fe71fe681dff8b6c2e9d25d89418c70882272161d940babecc47460c9e9"

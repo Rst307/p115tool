@@ -23,7 +23,7 @@ const labels = {
   PENDING:'待导入', QUEUED:'已排队', RUNNING:'导入中', DONE:'已完成', PARTIAL:'部分失败', FAILED:'失败',
   INTERRUPTED:'已中断', RESTARTED:'重启后需手动重试', TASK_UNAVAILABLE:'任务结果不可用，需手动核实后重试',
   EXTRACTION_AMBIGUOUS:'消息包含多个提取码，请手动复制链接和提取码到存储页导入',
-  VIRTUAL_ORGANIZE_FAILED:'识别或STRM输出失败，可核实后重试', STORAGE_FAILED:'分享读取或导入失败',
+  VIRTUAL_ORGANIZE_FAILED:'识别、分享验证或STRM输出失败，可核实后重试', STORAGE_FAILED:'分享读取或导入失败',
   SHARE_VIDEO_LIMIT:'分享超过1万个视频，请拆分导入', START_FAILED:'导入任务启动失败',
   SAVED:'订阅设置已保存', POLL_SCHEDULED:'已安排检查新消息', RETRY_QUEUED:'已安排重新导入',
   RETRY_UNAVAILABLE:'此记录当前无法重试，请刷新后核实',
@@ -37,7 +37,7 @@ export default {
     const sections=[['connection','连接设置'],['subscription','频道订阅'],['imports','导入记录']];
     const id=`p115-telegram-${nextId++}`;
     const status=ref(null), error=ref(''), notice=ref('');
-    const form=ref({enabled:false,mode:'web',api_id:'',api_hash:'',channels:'',interval:60,history_limit:0,proxy:'',clear_proxy:false});
+    const form=ref({enabled:false,mode:'web',api_id:'',api_hash:'',channels:'',interval:60,history_limit:0,proxy:'',clear_proxy:false,auto_upgrade:true});
     const phone=ref(''), code=ref(''), password=ref('');
     let timer, disposed=false;
     async function refresh(initial=false) {
@@ -71,7 +71,7 @@ export default {
       const f=form.value;
       action('telegram_settings',{settings:{enabled:f.enabled,mode:f.mode,api_id:f.api_id || 0,api_hash:f.api_hash.trim(),
         channels:f.channels.split(/[\n,，]/).map(s=>s.trim()).filter(Boolean),interval:f.interval,
-        history_limit:f.history_limit,proxy:f.proxy.trim(),clear_proxy:f.clear_proxy}});
+        history_limit:f.history_limit,proxy:f.proxy.trim(),clear_proxy:f.clear_proxy,auto_upgrade:f.auto_upgrade}});
     }
     function button(text, click, disabled=false) {
       return h('button',{type:'button',class:'p115-tg-button',disabled:busy.value||disabled,onClick:click},text);
@@ -139,6 +139,8 @@ export default {
           h('h3','频道订阅'),
           h('p','自动提取115分享、虚拟整理并生成STRM。导入时不转存视频，播放时才临时转存。'),
           h('label',{class:'p115-tg-check'},[h('input',{type:'checkbox',checked:form.value.enabled,onChange:e=>form.value.enabled=e.target.checked}),'启用频道订阅']),
+          h('label',{class:'p115-tg-check'},[h('input',{type:'checkbox',checked:form.value.auto_upgrade,onChange:e=>form.value.auto_upgrade=e.target.checked}),'自动替换更高画质资源']),
+          h('p','同一TMDB电影或同季同集先比较清晰度，同清晰度按 REMUX > Blu-ray > WEB-DL > WEBRip > HDTV。未知画质、不同剪辑／HDR／配音版本不互换，不按大小或编码猜测。新分享只读验证通过后切换来源，保留原STRM路径和播放地址；旧来源留作备用，导入不转存、不删除视频。'),
           h('label',{class:'p115-tg-field'},[h('span','频道（每行一个，最多30个）'),h('textarea',{'aria-label':'频道（每行一个，最多30个）',rows:4,value:form.value.channels,placeholder:form.value.mode==='web'?'@channel_name\nhttps://t.me/channel_name':'@channel_name\nhttps://t.me/channel_name\n-1001234567890',onInput:e=>form.value.channels=e.target.value}),h('small',form.value.mode==='web'?'只需填写公开频道名或频道网址，无需加入频道。支持 t.me/s/频道名；私有频道、邀请链接及受限网页不可读取。':'请先在此账号中加入频道。私有频道填写 -100 开头的频道ID；不接受邀请链接，不会自动加入。')]),
           h('div',{class:'p115-tg-grid'},[
             input('检查间隔（秒）','interval',{type:'number',min:30,max:3600}),
@@ -156,7 +158,7 @@ export default {
             h('tbody',status.value.items.map(item=>h('tr',{key:item.id},[
               h('td',`${item.channel} / ${item.message_id}`),
               h('td',[h('span',label(item.state)),item.error?h('small',label(item.error)):null]),
-              h('td',`${item.done} / ${item.failed}`),
+              h('td',[`${item.done} / ${item.failed}`,h('small',`升级 ${item.upgraded||0} · 保留 ${item.skipped||0}`)]),
               h('td',['FAILED','PARTIAL','INTERRUPTED'].includes(item.state)&&item.error!=='EXTRACTION_AMBIGUOUS'?button('重试',()=>action('telegram_retry',{id:item.id})):null),
             ]))),
           ])]):h('p','暂无导入记录'),

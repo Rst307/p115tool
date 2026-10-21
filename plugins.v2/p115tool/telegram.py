@@ -22,7 +22,7 @@ URL = re.compile(r'https?://[^\s<>"\'，。；）)\]】]+', re.I)
 PASSWORD = re.compile(r'(?:提取码|提取密码|访问码|访问密码|密码|口令|pwd|password)\s*[:：=]?\s*([A-Za-z0-9]{4})(?![A-Za-z0-9])', re.I)
 BACKLOG_LIMIT = 1000
 DEFAULTS = {'enabled': False, 'mode': 'web', 'api_id': 0, 'api_hash': '', 'channels': [],
-            'interval': 60, 'history_limit': 0, 'proxy': ''}
+            'interval': 60, 'history_limit': 0, 'proxy': '', 'auto_upgrade': True}
 
 
 def normalize_channel(value):
@@ -127,6 +127,10 @@ class TelegramMonitor:
             error TEXT, created_at REAL NOT NULL)''')
         service.query('CREATE INDEX IF NOT EXISTS telegram_imports_state ON telegram_imports(state,id)')
         service.query('CREATE INDEX IF NOT EXISTS telegram_imports_task ON telegram_imports(task_id)')
+        columns={c['name'] for c in service.query('PRAGMA table_info(telegram_imports)')}
+        for name in ('upgraded','skipped'):
+            if name not in columns:
+                service.query(f'ALTER TABLE telegram_imports ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0')
         # A Telegram import never requests a remote write. Interrupted indexing
         # can safely be explicitly retried with the existing stable resource IDs.
         service.query("UPDATE telegram_imports SET state='INTERRUPTED',error='RESTARTED' WHERE state IN ('QUEUED','RUNNING')")
@@ -144,6 +148,8 @@ class TelegramMonitor:
         if 'mode' not in data: result['mode'] = self.settings['mode'] if preserve else 'account'
         if result['mode'] not in ('web', 'account'): raise ValueError('Invalid Telegram mode')
         if type(result['enabled']) is not bool: raise ValueError('Invalid Telegram switch')
+        if type(result['auto_upgrade']) is not bool: raise ValueError('Invalid upgrade switch')
+        if 'auto_upgrade' not in data and preserve: result['auto_upgrade'] = self.settings['auto_upgrade']
         for key, low, high in (('api_id', 0, 2147483647), ('interval', 30, 3600), ('history_limit', 0, 500)):
             value = result[key]
             if isinstance(value, str) and re.fullmatch(r'\d{1,10}', value): value = int(value)
@@ -169,18 +175,18 @@ class TelegramMonitor:
 
     def snapshot(self):
         with self._guard:
-            settings = {k: self.settings[k] for k in ('enabled', 'mode', 'api_id', 'channels', 'interval', 'history_limit')}
+            settings = {k: self.settings[k] for k in ('enabled', 'mode', 'api_id', 'channels', 'interval', 'history_limit', 'auto_upgrade')}
             settings.update(api_hash_set=bool(self.settings['api_hash']), proxy_set=bool(self.settings['proxy']))
             state = {'settings': settings, 'state': self._state, 'error': self._error,
                      'authorized': self._authorized, 'last_poll': self._last_poll,
                      'channels': [dict(c) for c in self._channels]}
         with self.service._lock:
             tasks = {task['id']: task for task in self.service.storage.import_queue()['tasks']}
-            state['items'] = self.service.query('SELECT id,channel,message_id,state,done,failed,error,task_id FROM telegram_imports ORDER BY id DESC LIMIT 50')
+            state['items'] = self.service.query('SELECT id,channel,message_id,state,done,failed,error,task_id,upgraded,skipped FROM telegram_imports ORDER BY id DESC LIMIT 50')
             for item in state['items']:
                 task = tasks.get(item.pop('task_id'))
                 if task and item['state'] in ('QUEUED', 'RUNNING'):
-                    item.update({k: task[k] for k in ('state', 'done', 'failed', 'error') if k in task})
+                    item.update({k: task[k] for k in ('state', 'done', 'failed', 'error', 'upgraded', 'skipped') if k in task})
         state['pending'] = self.service.query("SELECT count(*) n FROM telegram_imports WHERE state IN ('PENDING','QUEUED','RUNNING')", one=True)['n']
         return state
 
@@ -482,8 +488,8 @@ class TelegramMonitor:
             for row in self.service.query("SELECT id,task_id FROM telegram_imports WHERE state IN ('QUEUED','RUNNING')"):
                 task = tasks.get(row['task_id'])
                 if task:
-                    self.service.query('UPDATE telegram_imports SET state=?,done=?,failed=?,error=? WHERE id=?',
-                        (task['state'], task.get('done', 0), task.get('failed', 0), task.get('error'), row['id']))
+                    self.service.query('UPDATE telegram_imports SET state=?,done=?,failed=?,error=?,upgraded=?,skipped=? WHERE id=?',
+                        (task['state'], task.get('done', 0), task.get('failed', 0), task.get('error'), task.get('upgraded',0), task.get('skipped',0), row['id']))
                 else:
                     self.service.query("UPDATE telegram_imports SET state='INTERRUPTED',error='TASK_UNAVAILABLE' WHERE id=?", (row['id'],))
 
@@ -493,14 +499,14 @@ class TelegramMonitor:
         # Running progress stays in memory, as it does for ordinary imports.
         # Persist only terminal results; do not fsync on every enumerated file.
         if value.get('task_id') and value['state'] in ('DONE', 'PARTIAL', 'FAILED', 'INTERRUPTED'):
-            self.service.query('UPDATE telegram_imports SET state=?,done=?,failed=?,error=? WHERE task_id=?',
-                (value['state'], value.get('done', 0), value.get('failed', 0), value.get('error'), value['task_id']))
+            self.service.query('UPDATE telegram_imports SET state=?,done=?,failed=?,error=?,upgraded=?,skipped=? WHERE task_id=?',
+                (value['state'], value.get('done', 0), value.get('failed', 0), value.get('error'), value.get('upgraded',0), value.get('skipped',0), value['task_id']))
 
     def _drain(self):
         for row in self.service.query("SELECT id,share_code,password FROM telegram_imports WHERE state='PENDING' ORDER BY id LIMIT 100"):
             if self._closing or self.service._stop.is_set(): return
             with self.service._lock:
-                result = self.service.storage.start('import', {'link': 'https://115.com/s/' + row['share_code'], 'password': row['password']})
+                result = self.service.storage.start('import', {'link': 'https://115.com/s/' + row['share_code'], 'password': row['password'], 'auto_upgrade':self.settings['auto_upgrade']})
                 state = result['state']
                 if state == 'QUEUE_FULL': return
                 if state in ('RUNNING', 'QUEUED', 'ALREADY_QUEUED'):

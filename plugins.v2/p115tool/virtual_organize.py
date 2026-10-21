@@ -9,6 +9,33 @@ from .models import SafetyError
 from .strm import safe_parts
 
 
+class VirtualPath(str):
+    """A normal destination string with host-recognized identity attached."""
+    def __new__(cls, value, identity=''):
+        result = super().__new__(cls, value)
+        result.identity = identity
+        return result
+
+
+def media_identity(media, meta, kind):
+    tmdb = str(getattr(media, 'tmdb_id', '') or '')
+    if not tmdb.isdecimal() or not 0 < int(tmdb) < 10**12: return ''
+    if kind == 'MOVIE': return 'movie:' + tmdb
+    season = getattr(meta, 'begin_season', None)
+    episode = getattr(meta, 'begin_episode', None)
+    end_season = getattr(meta, 'end_season', None)
+    end_episode = getattr(meta, 'end_episode', None)
+    total_season = getattr(meta, 'total_season', None)
+    total_episode = getattr(meta, 'total_episode', None)
+    if (type(season) is not int or not 0 <= season <= 999
+            or type(episode) is not int or not 0 <= episode <= 9999
+            or end_season not in (None, season) or end_episode not in (None, episode)
+            or type(total_season) is int and total_season > 1
+            or type(total_episode) is int and total_episode > 1):
+        return ''
+    return f'tv:{tmdb}:{season}:{episode}'
+
+
 def organize_virtual(relative):
     safe_parts(relative)
     # Pass only the share-relative hierarchy, never a URL or extraction code.
@@ -24,6 +51,8 @@ def organize_virtual(relative):
         kind = getattr(getattr(media, 'type', None), 'name', None)
         if not media or meta is None or kind not in ('MOVIE', 'TV'):
             raise SafetyError('Virtual media recognition failed')
+        # Capture before the host's single-file naming normalization clears ranges.
+        identity = media_identity(media, meta, kind)
         category = str(getattr(media, 'category', None) or '未分类')
         if len(safe_parts(category)) != 1:
             raise SafetyError('Virtual category invalid')
@@ -66,7 +95,7 @@ def organize_virtual(relative):
         safe_parts(result)
         if not destination.is_relative_to(base) or destination == base or destination.suffix.lower() != suffix.lower():
             raise SafetyError('Virtual naming path invalid')
-        return result
+        return VirtualPath(result, identity)
     except Exception:
         # Host exceptions may contain raw responses; surface a fixed message.
         raise SafetyError('MoviePilot virtual organization failed') from None
