@@ -21,6 +21,9 @@ from .models import ToolError
 URL = re.compile(r'https?://[^\s<>"\'，。；）)\]】]+', re.I)
 PASSWORD = re.compile(r'(?:提取码|提取密码|访问码|访问密码|密码|口令|pwd|password)\s*[:：=]?\s*([A-Za-z0-9]{4})(?![A-Za-z0-9])', re.I)
 BACKLOG_LIMIT = 1000
+NETWORK_INTERVAL = 300
+NETWORK_COOLDOWN = 30
+NETWORK_TIMEOUT = 15
 DEFAULTS = {'enabled': False, 'mode': 'web', 'api_id': 0, 'api_hash': '', 'channels': [],
             'interval': 60, 'history_limit': 0, 'proxy': '', 'auto_upgrade': True}
 
@@ -117,6 +120,7 @@ class TelegramMonitor:
         self._channels = []; self._next_poll = 0
         self._authorized = False; self._poll_task = None
         self._rate_until = 0
+        self._network_future = None; self._network_next = 0; self._network_requested_at = None
         service.query('''CREATE TABLE IF NOT EXISTS telegram_cursors (
             channel TEXT PRIMARY KEY, message_id INTEGER NOT NULL)''')
         service.query('''CREATE TABLE IF NOT EXISTS telegram_imports (
@@ -137,6 +141,7 @@ class TelegramMonitor:
         if self.settings_path.exists():
             try: self.settings = self._validate(json.loads(self.settings_path.read_text()), preserve=False)
             except Exception: self._error = 'CONFIG_INVALID'
+        self._network = self._network_unknown()
         if self.settings['enabled']:
             self._state = 'CONNECTING'; self._ensure_thread()
 
@@ -179,6 +184,7 @@ class TelegramMonitor:
             settings.update(api_hash_set=bool(self.settings['api_hash']), proxy_set=bool(self.settings['proxy']))
             state = {'settings': settings, 'state': self._state, 'error': self._error,
                      'authorized': self._authorized, 'last_poll': self._last_poll,
+                     'network': dict(self._network),
                      'channels': [dict(c) for c in self._channels]}
         with self.service._lock:
             tasks = {task['id']: task for task in self.service.storage.import_queue()['tasks']}
@@ -189,6 +195,71 @@ class TelegramMonitor:
                     item.update({k: task[k] for k in ('state', 'done', 'failed', 'error', 'upgraded', 'skipped') if k in task})
         state['pending'] = self.service.query("SELECT count(*) n FROM telegram_imports WHERE state IN ('PENDING','QUEUED','RUNNING')", one=True)['n']
         return state
+
+    def _network_unknown(self):
+        return {'state': 'UNKNOWN', 'mode': self.settings['mode'],
+                'via_proxy': bool(self.settings['proxy']), 'checked_at': None,
+                'latency_ms': None, 'error': None}
+
+    def check_network(self):
+        # Schedule immediately; never hold the native API/lifecycle lock while
+        # waiting for a channel poll or a slow proxy. Use saved settings only.
+        self._ensure_thread()
+        with self._guard:
+            if self._network['state'] == 'CHECKING': return {'state': 'NETWORK_CHECK_SCHEDULED'}
+            now = time.monotonic()
+            if self._network_requested_at is not None and now - self._network_requested_at < NETWORK_COOLDOWN:
+                return {'state': 'NETWORK_CHECK_COOLDOWN'}
+            if time.time() < self._rate_until or self._network['state'] == 'RATE_LIMITED' and time.time() < self._network_next:
+                return {'state': 'RATE_LIMITED'}
+            self._network_requested_at = now
+            self._network = {**self._network_unknown(), 'state': 'CHECKING'}
+            self._network_future = asyncio.run_coroutine_threadsafe(self._run_network_check(), self._loop)
+        return {'state': 'NETWORK_CHECK_SCHEDULED'}
+
+    async def _run_network_check(self):
+        # Account checks share the live transport, serialized with login/polls.
+        async with self._op:
+            started = time.monotonic()
+            state, error, delay = 'AVAILABLE', None, NETWORK_INTERVAL
+            try:
+                if self.settings['mode'] == 'account' and (not self.settings['api_id'] or not self.settings['api_hash']):
+                    state, error = 'SETTINGS_REQUIRED', 'API_REQUIRED'
+                else:
+                    await asyncio.wait_for(self._probe_network(), NETWORK_TIMEOUT)
+            except asyncio.CancelledError: raise
+            except Exception as exc:
+                from .telegram_web import PublicChannelError
+                state = 'UNAVAILABLE'
+                if isinstance(exc, (TimeoutError, asyncio.TimeoutError)): error = 'NETWORK_TIMEOUT'
+                elif isinstance(exc, ModuleNotFoundError): error = 'DEPENDENCY_MISSING'
+                elif isinstance(exc, PublicChannelError):
+                    error = exc.code
+                    if exc.code == 'RATE_LIMITED':
+                        state, delay = 'RATE_LIMITED', max(NETWORK_INTERVAL, exc.retry_after)
+                elif type(exc).__name__ == 'FloodWaitError':
+                    state, error, delay = 'RATE_LIMITED', 'RATE_LIMITED', max(NETWORK_INTERVAL, getattr(exc, 'seconds', 60))
+                    self._rate_until = max(self._rate_until, time.time() + delay)
+                elif type(exc).__name__ in ('ApiIdInvalidError', 'ConnectionApiIdInvalidError'):
+                    state, error = 'SETTINGS_REQUIRED', 'API_INVALID'
+                else: error = 'NETWORK_FAILED'
+            with self._guard:
+                self._network = {**self._network_unknown(), 'state': state, 'error': error,
+                    'checked_at': time.time(), 'latency_ms': max(0, round((time.monotonic() - started) * 1000))}
+                self._network_next = time.time() + delay
+
+    async def _probe_network(self):
+        if self.settings['mode'] == 'account':
+            from telethon.tl.functions.help import GetConfigRequest
+            client = await self._connect()
+            # Read-only RPC works before account login; no code requests,
+            # messages, subscriptions or session-file writes.
+            await client(GetConfigRequest())
+        else:
+            from .telegram_web import PublicChannelReader
+            reader = PublicChannelReader(self.settings['proxy'])
+            try: await reader.page('@telegram')
+            finally: await reader.close()
 
     def _ensure_thread(self):
         with self._guard:
@@ -237,6 +308,10 @@ class TelegramMonitor:
             self.settings = candidate; self._error = None; self._next_poll = 0
             self._state = 'CONNECTING' if candidate['enabled'] else 'DISABLED'
             self._channels = []
+            if changed:
+                if self._network_future: self._network_future.cancel()
+                self._network = self._network_unknown()
+                self._network_next = 0; self._network_requested_at = None
         if not candidate['enabled']: await self._disconnect()
         return {'state': 'SAVED'}
 
@@ -334,6 +409,8 @@ class TelegramMonitor:
     async def _poll_loop(self):
         while True:
             try:
+                if self.settings['enabled'] and time.time() >= self._network_next:
+                    self.check_network()
                 if self.settings['enabled'] and time.time() >= max(self._next_poll, self._rate_until):
                     async with self._op:
                         # Bound a tick without losing committed message cursors.

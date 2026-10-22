@@ -17,7 +17,8 @@ class TelegramAuthenticationTests(unittest.TestCase):
             return NS(is_active=authorization!='inactive',is_superuser=authorization!='ordinary')
         module.get_current_active_superuser_async=authenticate
         monitor=NS(snapshot=lambda:{'state':'DISABLED','settings':{'api_hash_set':False}},
-                   send_code=lambda phone:{'state':'CODE_SENT'})
+                   send_code=lambda phone:{'state':'CODE_SENT'},
+                   check_network=lambda:{'state':'NETWORK_CHECK_SCHEDULED'})
         plugin=NS(_lifecycle=threading.RLock(),_service=NS(telegram=monitor))
         app=FastAPI()
         with patch.dict(sys.modules,{'app.db.user_oper':module}):
@@ -28,6 +29,8 @@ class TelegramAuthenticationTests(unittest.TestCase):
                 headers={'authorization':auth} if auth else {}
                 self.assertEqual(client.post('/native/data',json={'kind':'telegram'},headers=headers).status_code,expected)
                 self.assertEqual(client.post('/native/action',json={'action':'telegram_send_code','phone':'+8613800000000'},headers=headers).status_code,expected)
+                self.assertEqual(client.post('/native/action',json={'action':'telegram_check_network'},headers=headers).status_code,expected)
+            self.assertEqual(client.post('/native/action',json={'action':'telegram_check_network','proxy':'http://evil.test:80'},headers={'authorization':'administrator'}).status_code,422)
             self.assertEqual(client.post('/native/action',content='invalid secret body').status_code,401)
 
 

@@ -42,6 +42,7 @@ def dispatch(plugin,route,payload):
         if route=='action' and set(payload)=={'action','code','password'} and payload['action']=='telegram_sign_in':
             return service.telegram.sign_in(payload['code'],payload['password'])
         if route=='action' and payload=={'action':'telegram_poll'}: return service.telegram.poll_now()
+        if route=='action' and payload=={'action':'telegram_check_network'}: return service.telegram.check_network()
         if route=='action' and set(payload)=={'action','id'} and payload['action']=='telegram_retry':
             return service.telegram.retry(payload['id'])
         if route=='action' and payload=={'action':'generate'}: return service.start()

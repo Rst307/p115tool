@@ -18,12 +18,19 @@ import {init,get} from '/assets/remoteEntry.js';
 init({vue:{'3.5.0':{get:()=>()=>Vue}}});
 window.calls=[];
 const data={settings:{enabled:false,mode:'web',api_id:0,api_hash_set:false,channels:[],interval:60,history_limit:0,proxy_set:false,auto_upgrade:true},state:'DISABLED',authorized:false,last_poll:null,channels:[],pending:1,items:[{id:1,channel:'-1001234567890',message_id:42,state:'FAILED',done:0,failed:1,upgraded:2,skipped:1,error:'STORAGE_FAILED'}]};
+data.network={state:'UNKNOWN',mode:'web',via_proxy:false,checked_at:null,latency_ms:null,error:null};
+window.networkOutcome='AVAILABLE';
 const api={async post(url,payload){window.calls.push(payload);
  if(payload.kind==='bootstrap') return {enabled:true,error:null,ui_contract:3};
  if(payload.kind==='status') return {state:'IDLE',count:0};
  if(payload.kind==='organize_sources') return {items:[],scheduled:false,time:'02:00',target:null,paused:false};
  if(payload.kind==='sources') return {items:[]};
  if(payload.kind==='telegram') return structuredClone(data);
+ if(payload.action==='telegram_check_network'){
+   data.network={...data.network,state:'CHECKING',mode:data.settings.mode,via_proxy:data.settings.proxy_set,checked_at:null,error:null};
+   setTimeout(()=>{data.network={...data.network,state:window.networkOutcome,checked_at:Date.now()/1000,latency_ms:123,error:window.networkOutcome==='UNAVAILABLE'?'NETWORK_FAILED':null};},300);
+   return {state:'NETWORK_CHECK_SCHEDULED'};
+ }
  if(payload.action==='telegram_settings'){data.settings={...payload.settings,api_hash_set:true,proxy_set:false};delete data.settings.api_hash;delete data.settings.proxy;return {state:'SAVED'};}
  if(payload.action==='telegram_send_code')return {state:'CODE_SENT'};
  if(payload.action==='telegram_sign_in'){if(!payload.password)return {state:'PASSWORD_REQUIRED'};data.authorized=true;return {state:'AUTHORIZED'};}
@@ -61,6 +68,29 @@ try {
   assert.equal(await page.getByLabel('订阅方式',{exact:true}).inputValue(),'web');
   assert.equal(await page.getByLabel('Telegram API ID',{exact:true}).count(),0);
   assert.equal(await page.getByLabel('手机号（含国家区号）',{exact:true}).count(),0);
+  await page.getByText('梯子状态：尚未检测',{exact:true}).waitFor();
+  await page.getByLabel('Telegram 代理（可选）',{exact:true}).fill('http://draft-proxy:8080');
+  await page.getByRole('button',{name:'检测梯子',exact:true}).click();
+  await page.getByText('梯子状态：正在检测…',{exact:true}).waitFor();
+  assert.equal(await page.getByRole('button',{name:'检测中…',exact:true}).isDisabled(),true);
+  assert.deepEqual(await page.evaluate(()=>window.calls.filter(c=>c.action==='telegram_check_network').at(-1)),{action:'telegram_check_network'});
+  await page.waitForTimeout(350);
+  await page.getByRole('button',{name:'刷新状态',exact:true}).click();
+  await page.getByText('梯子状态：可用',{exact:true}).waitFor();
+  await page.getByText(/耗时 123 ms/).waitFor();
+  assert.equal(await page.getByLabel('Telegram 代理（可选）',{exact:true}).inputValue(),'http://draft-proxy:8080','network check must retain unsaved drafts');
+  await page.evaluate(()=>window.networkOutcome='UNAVAILABLE');
+  await page.getByRole('button',{name:'检测梯子',exact:true}).click();
+  await page.getByText('梯子状态：正在检测…',{exact:true}).waitFor();
+  await page.waitForTimeout(350);
+  await page.getByRole('button',{name:'刷新状态',exact:true}).click();
+  await page.getByText('梯子状态：不可用',{exact:true}).waitFor();
+  await page.getByText('连接失败，请检查代理地址、认证和 MoviePilot 网络',{exact:true}).waitFor();
+  await page.setViewportSize({width:390,height:844});
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),'network status viewport overflow');
+  await page.screenshot({path:'/tmp/p115tool-telegram-network-mobile.png',fullPage:true});
+  await page.setViewportSize({width:1280,height:1000});
+  await page.getByLabel('Telegram 代理（可选）',{exact:true}).fill('');
   await page.getByRole('button',{name:'保存连接设置',exact:true}).click();
   await page.getByText('订阅设置已保存',{exact:true}).waitFor();
   await page.getByRole('tab',{name:'频道订阅',exact:true}).click();
@@ -163,5 +193,5 @@ try {
   await page.getByRole('button',{name:'整理设置',exact:true}).click();
   assert.deepEqual(await page.evaluate(()=>window.events),['switch']);
   assert.deepEqual(errors,[]);
-  console.log('PASS: default public web mode without API/login, mode switching, account login compatibility, real Vue/Vuetify navigation, drafts, hidden polling, host events, save/retry and 390px layouts');
+  console.log('PASS: network checking/available/unavailable, saved-only probe, latency/draft preservation, public web mode, account login, real Vue/Vuetify navigation, hidden polling, host events, save/retry and 390px layouts');
 } finally {if(browser)await browser.close();await new Promise(resolve=>server.close(resolve));}

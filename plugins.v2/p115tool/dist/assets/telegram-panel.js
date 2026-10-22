@@ -27,8 +27,15 @@ const labels = {
   SHARE_VIDEO_LIMIT:'分享超过1万个视频，请拆分导入', START_FAILED:'导入任务启动失败',
   SAVED:'订阅设置已保存', POLL_SCHEDULED:'已安排检查新消息', RETRY_QUEUED:'已安排重新导入',
   RETRY_UNAVAILABLE:'此记录当前无法重试，请刷新后核实',
+  NETWORK_CHECK_SCHEDULED:'已安排梯子检测，请稍候查看检测结果',
+  NETWORK_CHECK_COOLDOWN:'请等待30秒后再检测',
+  NETWORK_TIMEOUT:'连接超时，请检查梯子和 MoviePilot 网络',
+  NETWORK_FAILED:'连接失败，请检查代理地址、认证和 MoviePilot 网络',
+  API_REQUIRED:'请先保存 API ID 和 API Hash，再检测账号连接',
 };
 const label = value => labels[value] || '请检查订阅或导入状态';
+const networkLabels={UNKNOWN:'尚未检测',CHECKING:'正在检测…',AVAILABLE:'可用',UNAVAILABLE:'不可用',
+  SETTINGS_REQUIRED:'需要配置',RATE_LIMITED:'限流等待，暂时无法判断'};
 
 export default {
   name:'TelegramSubscriptions', props:{api:Object,active:{type:Boolean,default:true}},
@@ -93,6 +100,19 @@ export default {
       const tabs=event.currentTarget.parentElement;
       nextTick(()=>tabs.querySelectorAll('[role="tab"]')[target]?.focus());
     }
+    function networkStatus() {
+      const network=status.value.network || {state:'UNKNOWN'};
+      return h('div',{class:['p115-tg-network',`p115-tg-network-${network.state.toLowerCase()}`]},[
+        h('p',{role:'status','aria-live':'polite'},[
+          h('strong',`梯子状态：${networkLabels[network.state] || '尚未检测'}`),
+          h('small',`${network.via_proxy?'已保存代理':'服务器网络（未配置代理）'} · ${network.mode==='account'?'Telegram API':'Telegram 网页'}`),
+          network.checked_at?h('small',`检测时间：${new Date(network.checked_at*1000).toLocaleString()} · 耗时 ${network.latency_ms} ms`):null,
+          network.error?h('small',label(network.error)):null,
+        ]),
+        button(network.state==='CHECKING'?'检测中…':'检测梯子',()=>action('telegram_check_network'),network.state==='CHECKING'),
+        h('small','检测 MoviePilot 服务器到 Telegram 的连通性，使用已保存的订阅方式和代理；修改后请先保存。未配置代理时可检测系统 VPN／直连。启用订阅后每5分钟复检；可用不代表账号已登录或所有频道均可读取。'),
+      ]);
+    }
     watch(()=>props.active,active=>{if(active) refresh();});
     onMounted(()=>{if(props.active) refresh();timer=setInterval(()=>{if(props.active) refresh();},5000);});
     onUnmounted(()=>{disposed=true;clearInterval(timer);});
@@ -124,6 +144,7 @@ export default {
           input('Telegram 代理（可选）','proxy',{type:'password',autocomplete:'new-password',placeholder:status.value.settings.proxy_set?'已保存；留空保留':'socks5://host:1080 或 http://host:8080',hint:'填写 MoviePilot 容器能访问的地址，支持用户名与密码；代理只用于 Telegram。'}),
           h('label',{class:'p115-tg-check'},[h('input',{type:'checkbox',checked:form.value.clear_proxy,onChange:e=>form.value.clear_proxy=e.target.checked}),'清除已保存的代理']),
           h('div',{class:'p115-tg-actions'},[button('保存连接设置',save)]),
+          networkStatus(),
           form.value.mode==='account'?h('fieldset',{class:'p115-tg-login'},[
             h('legend',status.value.authorized?'Telegram 账号已登录':'登录 Telegram 账号'),
             h('label',{class:'p115-tg-field'},[h('span','手机号（含国家区号）'),h('input',{type:'tel',value:phone.value,autocomplete:'off',placeholder:'+8613800000000',onInput:e=>phone.value=e.target.value})]),

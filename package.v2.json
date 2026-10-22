@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "实际与虚拟存储、分享临时转存、分类STRM及302播放",
     "labels": "115,STRM,媒体管理",
-    "version": "0.2.43",
+    "version": "0.2.44",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.2.44": "Telegram新增梯子可用状态、手动检测与5分钟自动复检；按已保存配置验证网页或账号API连接，显示检测时间、耗时和脱敏错误，支持系统VPN/直连并保留订阅及登录状态",
       "v0.2.43": "Telegram自动替换更高画质虚拟来源：同TMDB同集按清晰度和片源比较，验证后原子切换并保留STRM、播放地址及旧源；新增升级开关和结果计数，兼容115链接片段",
       "v0.2.42": "新增公开频道网页订阅，免API ID/Hash与账号登录，默认网页模式；链接提取、分页续读、首次回看、背压和虚拟导入复用原流程，保留旧账号模式及脱敏错误",
       "v0.2.41": "Telegram改为与整理、STRM、存储并列的独立标签，连接、订阅和导入记录分区显示；切换保留未保存输入，不再追加在原配置底部",
