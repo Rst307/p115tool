@@ -27,6 +27,7 @@ const labels = {
   SHARE_VIDEO_LIMIT:'分享超过1万个视频，请拆分导入', START_FAILED:'导入任务启动失败',
   SAVED:'订阅设置已保存', POLL_SCHEDULED:'已安排检查新消息', RETRY_QUEUED:'已安排重新导入',
   RETRY_UNAVAILABLE:'此记录当前无法重试，请刷新后核实',
+  RETRY_QUEUE_FULL:'待处理队列已满，请等待任务完成后再重试',
   NETWORK_CHECK_SCHEDULED:'已安排梯子检测，请稍候查看检测结果',
   NETWORK_CHECK_COOLDOWN:'请等待30秒后再检测',
   NETWORK_TIMEOUT:'连接超时，请检查梯子和 MoviePilot 网络',
@@ -36,6 +37,8 @@ const labels = {
 const label = value => labels[value] || '请检查订阅或导入状态';
 const networkLabels={UNKNOWN:'尚未检测',CHECKING:'正在检测…',AVAILABLE:'可用',UNAVAILABLE:'不可用',
   SETTINGS_REQUIRED:'需要配置',RATE_LIMITED:'限流等待，暂时无法判断'};
+const historyStates=['ALL','PENDING','QUEUED','RUNNING','DONE','PARTIAL','FAILED','INTERRUPTED'];
+const dateLabel=value=>value?new Date(value*1000).toLocaleString():'未记录';
 
 export default {
   name:'TelegramSubscriptions', props:{api:Object,active:{type:Boolean,default:true}},
@@ -46,14 +49,16 @@ export default {
     const status=ref(null), error=ref(''), notice=ref('');
     const form=ref({enabled:false,mode:'web',api_id:'',api_hash:'',channels:'',interval:60,history_limit:0,proxy:'',clear_proxy:false,auto_upgrade:true});
     const phone=ref(''), code=ref(''), password=ref('');
+    const historySearch=ref(''), historyState=ref('ALL');
+    let historyPage=1, appliedSearch='', appliedState='ALL';
     let timer, disposed=false;
     async function refresh(initial=false) {
       if (loading.value || disposed) return;
       loading.value=true;
       try {
-        const result=await request(props.api,'data',{kind:'telegram'});
+        const result=await request(props.api,'data',{kind:'telegram',page:historyPage,state:appliedState,search:appliedSearch});
         if(disposed) return;
-        status.value=result; error.value='';
+        status.value=result; historyPage=result.page||1; error.value='';
         if(initial || !loaded.value) {
           const settings=result.settings;
           form.value={...form.value,...settings,api_hash:'',proxy:'',channels:settings.channels.join('\n'),clear_proxy:false};
@@ -68,6 +73,10 @@ export default {
       try {
         const result=await request(props.api,'action',{action,...payload});
         notice.value=label(result.error || result.state);
+        if(result.state==='RETRY_BATCH_QUEUED') {
+          notice.value=`已安排重试 ${result.queued} 项${result.remaining?`，另有 ${result.remaining} 项待队列空闲后再次重试`:''}${result.subscription_enabled?'':'；订阅已关闭，启用后处理'}`;
+        }
+        if(result.state==='RETRY_UNAVAILABLE' && action==='telegram_retry_all') notice.value='没有可重试的失败导入';
         if(result.state==='AUTHORIZED') {phone.value='';code.value='';password.value='';}
         if(result.state==='SAVED') {form.value.api_hash='';form.value.proxy='';form.value.clear_proxy=false;}
         await refresh();
@@ -79,6 +88,20 @@ export default {
       action('telegram_settings',{settings:{enabled:f.enabled,mode:f.mode,api_id:f.api_id || 0,api_hash:f.api_hash.trim(),
         channels:f.channels.split(/[\n,，]/).map(s=>s.trim()).filter(Boolean),interval:f.interval,
         history_limit:f.history_limit,proxy:f.proxy.trim(),clear_proxy:f.clear_proxy,auto_upgrade:f.auto_upgrade}});
+    }
+    function filterHistory(page=1) {
+      if(loading.value) return;
+      historyPage=page;appliedSearch=historySearch.value.trim();appliedState=historyState.value;
+      refresh();
+    }
+    function historyNames(item) {
+      const names=item.media_names||[];
+      return h('td',{class:'p115-tg-names'},[
+        h('strong',item.title||'未记录频道标题'),
+        names.length?h('details',[h('summary',`识别名称 / 季集（${names.length}${item.total>names.length?'项摘要':'项'}）`),
+          h('ul',names.map(name=>h('li',name))),item.total>names.length?h('small',`分享共 ${item.total} 个视频，最多展示10项名称`):null]):h('small','暂无识别名称'),
+        h('small',`${item.channel} / 消息 ${item.message_id}`),
+      ]);
     }
     function button(text, click, disabled=false) {
       return h('button',{type:'button',class:'p115-tg-button',disabled:busy.value||disabled,onClick:click},text);
@@ -172,17 +195,34 @@ export default {
           status.value.channels.length?h('ul',status.value.channels.map(c=>h('li',{key:c.channel},`${c.channel}：${label(c.state)}`))):null,
           ]):null,
           section.value==='imports'?h('div',[
-          h('h3','最近50项导入'),
-          h('p','相同分享与提取码只登记一次；失败项可手动重试。消息编辑、邀请链接及中转网页不自动解析。'),
+          h('h3','导入记录'),
+          h('p','频道标题供参考，展开可查看实际识别的剧名、季集和文件名称。相同分享与提取码只登记一次；一键重试覆盖全部历史可重试项，不受当前筛选限制。'),
+          h('div',{class:'p115-tg-counts','aria-label':'全部历史状态统计'},historyStates.slice(1).map(key=>h('span',`${label(key)} ${status.value.counts?.[key]||0}`))),
+          h('form',{class:'p115-tg-filters',onSubmit:e=>{e.preventDefault();filterHistory();}},[
+            h('label',{class:'p115-tg-field'},[h('span','搜索导入记录'),h('input',{'aria-label':'搜索导入记录',placeholder:'剧名、季集、频道或消息编号',maxlength:100,value:historySearch.value,onInput:e=>historySearch.value=e.target.value})]),
+            h('label',{class:'p115-tg-field'},[h('span','记录状态'),h('select',{'aria-label':'记录状态',value:historyState.value,onChange:e=>historyState.value=e.target.value},historyStates.map(key=>h('option',{value:key},key==='ALL'?'全部状态':label(key))))]),
+            button('筛选记录',()=>filterHistory(),loading.value),
+          ]),
+          h('div',{class:'p115-tg-actions'},[button(`一键重试失败项（${status.value.retryable||0}）`,()=>action('telegram_retry_all'),!status.value.retryable)]),
+          !status.value.settings.enabled?h('p','订阅已关闭，重试项入队后需启用频道订阅才能处理。'):null,
           status.value.items.length?h('div',{class:'p115-tg-table-scroll'},[h('table',{class:'p115-tg-table'},[
-            h('thead',[h('tr',['频道 / 消息','状态','成功 / 失败','操作'].map(text=>h('th',text)))]),
+            h('thead',[h('tr',['剧集 / 来源','状态','成功 / 失败','时间 / 尝试','操作'].map(text=>h('th',text)))]),
             h('tbody',status.value.items.map(item=>h('tr',{key:item.id},[
-              h('td',`${item.channel} / ${item.message_id}`),
-              h('td',[h('span',label(item.state)),item.error?h('small',label(item.error)):null]),
-              h('td',[`${item.done} / ${item.failed}`,h('small',`升级 ${item.upgraded||0} · 保留 ${item.skipped||0}`)]),
-              h('td',['FAILED','PARTIAL','INTERRUPTED'].includes(item.state)&&item.error!=='EXTRACTION_AMBIGUOUS'?button('重试',()=>action('telegram_retry',{id:item.id})):null),
+              historyNames(item),
+              h('td',[h('span',{class:['p115-tg-badge',`p115-tg-state-${item.state.toLowerCase()}`]},label(item.state)),
+                item.state==='RUNNING'?h('small',item.phase==='SCANNING'?`扫描中 · 已发现 ${item.found||0} 个视频`:`已处理 ${item.done+item.failed}${item.total!=null?' / '+item.total:''}`):null,
+                item.error?h('small',label(item.error)):null]),
+              h('td',[`${item.done} / ${item.failed}`,item.total!=null?h('small',`视频总数 ${item.total}`):null,h('small',`升级 ${item.upgraded||0} · 保留 ${item.skipped||0}`)]),
+              h('td',[h('small',`收录 ${dateLabel(item.created_at)}`),h('small',`开始 ${dateLabel(item.started_at)}`),h('small',`结束 ${dateLabel(item.finished_at)}`),h('small',`尝试 ${item.attempts||0} 次`)]),
+              h('td',[item.message_url?h('a',{href:item.message_url,target:'_blank',rel:'noopener noreferrer'},'原消息'):null,
+                item.retryable?button('重试',()=>action('telegram_retry',{id:item.id})):null]),
             ]))),
-          ])]):h('p','暂无导入记录'),
+          ])]):h('p',appliedSearch||appliedState!=='ALL'?'没有符合条件的导入记录':'暂无导入记录'),
+          h('div',{class:'p115-tg-actions'},[
+            button('上一页',()=>filterHistory(historyPage-1),loading.value||historyPage<=1),
+            h('span',`第 ${status.value.page||1} / ${Math.max(1,Math.ceil((status.value.total||0)/50))} 页 · 共 ${status.value.total||0} 项`),
+            button('下一页',()=>filterHistory(historyPage+1),loading.value||historyPage*50>=(status.value.total||0)),
+          ]),
           ]):null,
         ]):null,
     ]);

@@ -11,21 +11,29 @@ const modules=process.env.P115_UI_TEST_NODE_MODULES;
 if(!modules) throw new Error('Set P115_UI_TEST_NODE_MODULES to a temporary Vue + Playwright installation');
 const require=createRequire(path.join(modules,'../package.json'));
 const {chromium}=require('playwright');
-const html=`<!DOCTYPE html><html lang="zh"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/vuetify.css"><link rel="stylesheet" href="/assets/ui-8ywdPfsL.css"><link rel="stylesheet" href="/assets/telegram.css"><script type="importmap">{"imports":{"vue":"/vue.js"}}</script><body><div id="app"></div><script type="module">
+const html=`<!DOCTYPE html><html lang="zh"><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/vuetify.css"><link rel="stylesheet" href="/assets/ui-8ywdPfsL.css"><link rel="stylesheet" href="/assets/telegram.css"><script type="importmap">{"imports":{"vue":"/vue.js"}}</script><body><div id="app"></div><script type="module">
 import * as Vue from '/vue.js';
 import {createVuetify,components,directives} from '/vuetify.js';
 import {init,get} from '/assets/remoteEntry.js';
 init({vue:{'3.5.0':{get:()=>()=>Vue}}});
 window.calls=[];
 const data={settings:{enabled:false,mode:'web',api_id:0,api_hash_set:false,channels:[],interval:60,history_limit:0,proxy_set:false,auto_upgrade:true},state:'DISABLED',authorized:false,last_poll:null,channels:[],pending:1,items:[{id:1,channel:'-1001234567890',message_id:42,state:'FAILED',done:0,failed:1,upgraded:2,skipped:1,error:'STORAGE_FAILED'}]};
+Object.assign(data.items[0],{title:'示例剧 更新 S01E01',media_names:['电视剧/示例剧 (2026)/Season 01/Example.S01E01.mkv'],message_url:'https://t.me/c/1234567890/42',retryable:true,attempts:2,created_at:1792728000,started_at:1792728060,finished_at:1792728120,total:1});
+window.telegramData=data;
 data.network={state:'UNKNOWN',mode:'web',via_proxy:false,checked_at:null,latency_ms:null,error:null};
+data.retryable=3;
 window.networkOutcome='AVAILABLE';
 const api={async post(url,payload){window.calls.push(payload);
  if(payload.kind==='bootstrap') return {enabled:true,error:null,ui_contract:3};
  if(payload.kind==='status') return {state:'IDLE',count:0};
  if(payload.kind==='organize_sources') return {items:[],scheduled:false,time:'02:00',target:null,paused:false};
  if(payload.kind==='sources') return {items:[]};
- if(payload.kind==='telegram') return structuredClone(data);
+ if(payload.kind==='telegram') {
+   const items=data.items.filter(item=>(!payload.state||payload.state==='ALL'||item.state===payload.state)&&(!payload.search||JSON.stringify([item.title,item.media_names,item.channel,item.message_id]).toLowerCase().includes(payload.search.toLowerCase())));
+   const page=Math.min(payload.page||1,Math.max(1,Math.ceil(items.length/50)));
+   const counts={};for(const item of data.items)counts[item.state]=(counts[item.state]||0)+1;
+   return structuredClone({...data,total:items.length,page,counts,items:items.slice((page-1)*50,page*50)});
+ }
  if(payload.action==='telegram_check_network'){
    data.network={...data.network,state:'CHECKING',mode:data.settings.mode,via_proxy:data.settings.proxy_set,checked_at:null,error:null};
    setTimeout(()=>{data.network={...data.network,state:window.networkOutcome,checked_at:Date.now()/1000,latency_ms:123,error:window.networkOutcome==='UNAVAILABLE'?'NETWORK_FAILED':null};},300);
@@ -35,6 +43,10 @@ const api={async post(url,payload){window.calls.push(payload);
  if(payload.action==='telegram_send_code')return {state:'CODE_SENT'};
  if(payload.action==='telegram_sign_in'){if(!payload.password)return {state:'PASSWORD_REQUIRED'};data.authorized=true;return {state:'AUTHORIZED'};}
  if(payload.action==='telegram_retry')return {state:'RETRY_QUEUED'};
+ if(payload.action==='telegram_retry_all'){
+   const queued=Math.min(2,data.retryable);data.retryable-=queued;
+   return {state:queued?'RETRY_BATCH_QUEUED':'RETRY_UNAVAILABLE',queued,remaining:data.retryable,subscription_enabled:data.settings.enabled};
+ }
  return {state:'POLL_SCHEDULED'};
 }};
 const Panel=(await import('/assets/telegram-panel.js')).default;
@@ -143,6 +155,42 @@ try {
   assert.equal(await page.getByLabel('Telegram API ID',{exact:true}).count(),0);
   await page.getByRole('button',{name:'重试',exact:true}).click();
   await page.getByText('已安排重新导入',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'一键重试失败项（3）',exact:true}).click();
+  await page.getByText('已安排重试 2 项，另有 1 项待队列空闲后再次重试',{exact:true}).waitFor();
+  assert.deepEqual(await page.evaluate(()=>window.calls.filter(c=>c.action==='telegram_retry_all').at(-1)),{action:'telegram_retry_all'});
+  await page.setViewportSize({width:390,height:844});
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),'batch retry viewport overflow');
+  await page.screenshot({path:'/tmp/p115tool-telegram-retry-mobile.png',fullPage:true});
+  await page.setViewportSize({width:1280,height:1000});
+  await page.getByRole('button',{name:'一键重试失败项（1）',exact:true}).click();
+  await page.getByText('已安排重试 1 项',{exact:true}).waitFor();
+  assert.equal(await page.getByRole('button',{name:'一键重试失败项（0）',exact:true}).isDisabled(),true);
+  await page.getByText('示例剧 更新 S01E01',{exact:true}).waitFor();
+  await page.getByText('识别名称 / 季集（1项）',{exact:true}).click();
+  await page.getByText('电视剧/示例剧 (2026)/Season 01/Example.S01E01.mkv',{exact:true}).waitFor();
+  assert.equal(await page.getByRole('link',{name:'原消息'}).getAttribute('href'),'https://t.me/c/1234567890/42');
+  await page.getByText('尝试 2 次',{exact:true}).waitFor();
+  await page.getByLabel('搜索导入记录',{exact:true}).fill('不存在的剧');
+  await page.getByRole('button',{name:'筛选记录',exact:true}).click();
+  await page.getByText('没有符合条件的导入记录',{exact:true}).waitFor();
+  await page.getByLabel('搜索导入记录',{exact:true}).fill('S01E01');
+  await page.getByLabel('记录状态',{exact:true}).selectOption('FAILED');
+  await page.getByRole('button',{name:'筛选记录',exact:true}).click();
+  await page.getByText('示例剧 更新 S01E01',{exact:true}).waitFor();
+  assert.deepEqual(await page.evaluate(()=>window.calls.filter(c=>c.kind==='telegram').at(-1)),{kind:'telegram',page:1,state:'FAILED',search:'S01E01'});
+  await page.evaluate(()=>{for(let i=2;i<=56;i++) window.telegramData.items.push({id:i,channel:'@example',message_id:i,title:'历史剧 '+i,state:'DONE',done:1,failed:0,media_names:[],retryable:false});});
+  await page.getByLabel('搜索导入记录',{exact:true}).fill('');
+  await page.getByLabel('记录状态',{exact:true}).selectOption('ALL');
+  await page.getByRole('button',{name:'筛选记录',exact:true}).click();
+  await page.getByText('第 1 / 2 页 · 共 56 项',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'下一页',exact:true}).click();
+  await page.getByText('第 2 / 2 页 · 共 56 项',{exact:true}).waitFor();
+  await page.getByText('历史剧 56',{exact:true}).waitFor();
+  assert.equal(await page.getByRole('button',{name:'下一页',exact:true}).isDisabled(),true);
+  await page.setViewportSize({width:390,height:844});
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),'history viewport overflow');
+  await page.screenshot({path:'/tmp/p115tool-telegram-history-mobile.png',fullPage:true});
+  await page.setViewportSize({width:1280,height:1000});
   assert.equal(await page.evaluate(()=>window.wrappers.Config.name),'P115ConfigWithTelegram');
   assert.equal(await page.evaluate(()=>window.wrappers.Page.name),'P115PageWithTelegram');
   await page.getByRole('tab',{name:'连接设置',exact:true}).focus();
@@ -193,5 +241,5 @@ try {
   await page.getByRole('button',{name:'整理设置',exact:true}).click();
   assert.deepEqual(await page.evaluate(()=>window.events),['switch']);
   assert.deepEqual(errors,[]);
-  console.log('PASS: network checking/available/unavailable, saved-only probe, latency/draft preservation, public web mode, account login, real Vue/Vuetify navigation, hidden polling, host events, save/retry and 390px layouts');
+  console.log('PASS: Chinese media names/episodes, source link, attempt count, history search/status/pagination, network checks, public web/account login, Vue/Vuetify navigation, hidden polling, save/retry and 390px layouts');
 } finally {if(browser)await browser.close();await new Promise(resolve=>server.close(resolve));}

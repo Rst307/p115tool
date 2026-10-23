@@ -17,6 +17,7 @@ from urllib.parse import urlsplit, unquote
 
 from .storage import parse_share
 from .models import ToolError
+from .import_history import message_title, display_name
 
 URL = re.compile(r'https?://[^\s<>"\'，。；）)\]】]+', re.I)
 PASSWORD = re.compile(r'(?:提取码|提取密码|访问码|访问密码|密码|口令|pwd|password)\s*[:：=]?\s*([A-Za-z0-9]{4})(?![A-Za-z0-9])', re.I)
@@ -24,6 +25,7 @@ BACKLOG_LIMIT = 1000
 NETWORK_INTERVAL = 300
 NETWORK_COOLDOWN = 30
 NETWORK_TIMEOUT = 15
+RETRYABLE = "state IN ('FAILED','PARTIAL','INTERRUPTED') AND share_code!='' AND coalesce(error,'')!='EXTRACTION_AMBIGUOUS'"
 DEFAULTS = {'enabled': False, 'mode': 'web', 'api_id': 0, 'api_hash': '', 'channels': [],
             'interval': 60, 'history_limit': 0, 'proxy': '', 'auto_upgrade': True}
 
@@ -135,9 +137,15 @@ class TelegramMonitor:
         for name in ('upgraded','skipped'):
             if name not in columns:
                 service.query(f'ALTER TABLE telegram_imports ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0')
+        for name, definition in (('title', "TEXT NOT NULL DEFAULT ''"), ('media_names', "TEXT NOT NULL DEFAULT '[]'"),
+                                 ('total', 'INTEGER'), ('started_at', 'REAL'), ('finished_at', 'REAL'),
+                                 ('updated_at', 'REAL'), ('attempts', 'INTEGER NOT NULL DEFAULT 0')):
+            if name not in columns:
+                service.query(f'ALTER TABLE telegram_imports ADD COLUMN {name} {definition}')
+        service.query('CREATE INDEX IF NOT EXISTS telegram_resource_share ON resource_storage(share_code)')
         # A Telegram import never requests a remote write. Interrupted indexing
         # can safely be explicitly retried with the existing stable resource IDs.
-        service.query("UPDATE telegram_imports SET state='INTERRUPTED',error='RESTARTED' WHERE state IN ('QUEUED','RUNNING')")
+        service.query("UPDATE telegram_imports SET state='INTERRUPTED',error='RESTARTED',finished_at=?,updated_at=? WHERE state IN ('QUEUED','RUNNING')", (time.time(),time.time()))
         if self.settings_path.exists():
             try: self.settings = self._validate(json.loads(self.settings_path.read_text()), preserve=False)
             except Exception: self._error = 'CONFIG_INVALID'
@@ -178,7 +186,11 @@ class TelegramMonitor:
             raise ValueError('Telegram configuration required')
         return result
 
-    def snapshot(self):
+    def snapshot(self, page=1, state_filter='ALL', search=''):
+        states = ('PENDING','QUEUED','RUNNING','DONE','PARTIAL','FAILED','INTERRUPTED')
+        if (type(page) is not int or not 1 <= page <= 100000 or state_filter not in ('ALL', *states)
+                or not isinstance(search,str) or len(search)>100):
+            raise ValueError('Invalid Telegram history filter')
         with self._guard:
             settings = {k: self.settings[k] for k in ('enabled', 'mode', 'api_id', 'channels', 'interval', 'history_limit', 'auto_upgrade')}
             settings.update(api_hash_set=bool(self.settings['api_hash']), proxy_set=bool(self.settings['proxy']))
@@ -188,12 +200,36 @@ class TelegramMonitor:
                      'channels': [dict(c) for c in self._channels]}
         with self.service._lock:
             tasks = {task['id']: task for task in self.service.storage.import_queue()['tasks']}
-            state['items'] = self.service.query('SELECT id,channel,message_id,state,done,failed,error,task_id,upgraded,skipped FROM telegram_imports ORDER BY id DESC LIMIT 50')
+            where = " WHERE (?='ALL' OR t.state=?) AND (?='' OR instr(lower(t.title||' '||t.channel||' '||t.message_id||' '||t.media_names),lower(?))>0 OR EXISTS (SELECT 1 FROM resource_storage s JOIN strm_files f ON f.file_id=s.media_id WHERE s.share_code=t.share_code AND instr(lower(f.relative_path),lower(?))>0))"
+            args = (state_filter,state_filter,search,search,search)
+            state['total'] = self.service.query('SELECT count(*) n FROM telegram_imports t'+where,args,one=True)['n']
+            page = min(page,max(1,(state['total']+49)//50))
+            state.update(page=page,page_size=50)
+            state['counts'] = {key:0 for key in states}
+            state['counts'].update({r['state']:r['n'] for r in self.service.query('SELECT state,count(*) n FROM telegram_imports GROUP BY state')})
+            fields = 'id,channel,message_id,state,done,failed,error,task_id,upgraded,skipped,title,media_names,total,created_at,started_at,finished_at,updated_at,attempts,share_code,password'
+            state['items'] = self.service.query('SELECT '+','.join('t.'+field for field in fields.split(','))+' FROM telegram_imports t'+where+' ORDER BY id DESC LIMIT 50 OFFSET ?',(*args,(page-1)*50))
             for item in state['items']:
                 task = tasks.get(item.pop('task_id'))
                 if task and item['state'] in ('QUEUED', 'RUNNING'):
-                    item.update({k: task[k] for k in ('state', 'done', 'failed', 'error', 'upgraded', 'skipped') if k in task})
+                    item.update({k: task[k] for k in ('state', 'done', 'failed', 'error', 'upgraded', 'skipped','total','media_names','started_at','phase','scanned','found') if k in task})
+                secrets = (item.pop('share_code'), item.pop('password'))
+                names = item['media_names']
+                if isinstance(names,str):
+                    try: names=json.loads(names)
+                    except (ValueError,TypeError): names=[]
+                if not isinstance(names,list): names=[]
+                if not names and secrets[0]:
+                    names = [r['relative_path'] for r in self.service.query('SELECT f.relative_path FROM resource_storage s JOIN strm_files f ON f.file_id=s.media_id WHERE s.share_code=? ORDER BY f.relative_path LIMIT 10',(secrets[0],))]
+                item['media_names'] = [label for name in names[:10] if isinstance(name,str) and (label:=display_name(name,secrets))]
+                item['title'] = display_name(item['title'],secrets)
+                channel = item['channel']
+                username = channel[1:] if re.fullmatch(r'@[a-z][a-z0-9_]{3,31}',channel) else None
+                private = channel[4:] if re.fullmatch(r'-100[1-9][0-9]{0,15}',channel) else None
+                item['message_url'] = ('https://t.me/'+username+'/' if username else 'https://t.me/c/'+private+'/' if private else '') + str(item['message_id']) if username or private else None
+                item['retryable'] = item['state'] in ('FAILED','PARTIAL','INTERRUPTED') and bool(secrets[0]) and item['error']!='EXTRACTION_AMBIGUOUS'
         state['pending'] = self.service.query("SELECT count(*) n FROM telegram_imports WHERE state IN ('PENDING','QUEUED','RUNNING')", one=True)['n']
+        state['retryable'] = self.service.query('SELECT count(*) n FROM telegram_imports WHERE ' + RETRYABLE, one=True)['n']
         return state
 
     def _network_unknown(self):
@@ -543,18 +579,19 @@ class TelegramMonitor:
 
     def ingest(self, channel, message):
         shares, ambiguous = extract_shares(message)
+        title = message_title(message, [part for share in shares for part in share] + PASSWORD.findall((getattr(message,'message','') or '')[:65536]))
         for code, password in shares:
             fingerprint = hashlib.sha256((code + ':' + password).encode()).hexdigest()
             if self.service.query('SELECT id FROM telegram_imports WHERE fingerprint=?', (fingerprint,), one=True): continue
             pending = self.service.query("SELECT count(*) n FROM telegram_imports WHERE state IN ('PENDING','QUEUED','RUNNING')", one=True)['n']
             if pending >= BACKLOG_LIMIT: return False
-            self.service.query('INSERT OR IGNORE INTO telegram_imports(fingerprint,channel,message_id,share_code,password,state,created_at) VALUES(?,?,?,?,?,\'PENDING\',?)',
-                               (fingerprint, channel, message.id, code, password, time.time()))
+            self.service.query('INSERT OR IGNORE INTO telegram_imports(fingerprint,channel,message_id,share_code,password,state,created_at,title,updated_at) VALUES(?,?,?,?,?,\'PENDING\',?,?,?)',
+                               (fingerprint, channel, message.id, code, password, time.time(),title,time.time()))
         if ambiguous:
             # One diagnostic per message, with no raw message or guessed password.
             fingerprint = hashlib.sha256(('ambiguous:' + channel + ':' + str(message.id)).encode()).hexdigest()
-            self.service.query('INSERT OR IGNORE INTO telegram_imports(fingerprint,channel,message_id,share_code,password,state,error,created_at) VALUES(?,?,?,\'\',\'\',\'FAILED\',\'EXTRACTION_AMBIGUOUS\',?)',
-                               (fingerprint, channel, message.id, time.time()))
+            self.service.query('INSERT OR IGNORE INTO telegram_imports(fingerprint,channel,message_id,share_code,password,state,error,created_at,title,updated_at,finished_at) VALUES(?,?,?,\'\',\'\',\'FAILED\',\'EXTRACTION_AMBIGUOUS\',?,?,?,?)',
+                               (fingerprint, channel, message.id, time.time(),title,time.time(),time.time()))
         return True
 
     def _sync_tasks(self):
@@ -565,19 +602,26 @@ class TelegramMonitor:
             for row in self.service.query("SELECT id,task_id FROM telegram_imports WHERE state IN ('QUEUED','RUNNING')"):
                 task = tasks.get(row['task_id'])
                 if task:
-                    self.service.query('UPDATE telegram_imports SET state=?,done=?,failed=?,error=?,upgraded=?,skipped=? WHERE id=?',
-                        (task['state'], task.get('done', 0), task.get('failed', 0), task.get('error'), task.get('upgraded',0), task.get('skipped',0), row['id']))
+                    self._record_task(task, 'id', row['id'])
                 else:
-                    self.service.query("UPDATE telegram_imports SET state='INTERRUPTED',error='TASK_UNAVAILABLE' WHERE id=?", (row['id'],))
+                    self.service.query("UPDATE telegram_imports SET state='INTERRUPTED',error='TASK_UNAVAILABLE',updated_at=?,finished_at=? WHERE id=?", (time.time(),time.time(),row['id']))
+
+    def _record_task(self, value, key, identity):
+        now = time.time()
+        terminal = value['state'] in ('DONE','PARTIAL','FAILED','INTERRUPTED')
+        names = value.get('media_names')
+        names = json.dumps(names[:10],ensure_ascii=False) if isinstance(names,list) else None
+        self.service.query('UPDATE telegram_imports SET state=?,done=?,failed=?,error=?,upgraded=?,skipped=?,total=coalesce(?,total),media_names=coalesce(?,media_names),started_at=coalesce(started_at,?),updated_at=?,finished_at=? WHERE '+key+'=?',
+            (value['state'],value.get('done',0),value.get('failed',0),value.get('error'),value.get('upgraded',0),value.get('skipped',0),value.get('total'),names,value.get('started_at'),now,now if terminal else None,identity))
 
     def import_progress(self, value):
         # Called under the service lock. Persist final results before the
         # storage queue trims its 50-item in-memory history.
         # Running progress stays in memory, as it does for ordinary imports.
-        # Persist only terminal results; do not fsync on every enumerated file.
-        if value.get('task_id') and value['state'] in ('DONE', 'PARTIAL', 'FAILED', 'INTERRUPTED'):
-            self.service.query('UPDATE telegram_imports SET state=?,done=?,failed=?,error=?,upgraded=?,skipped=? WHERE task_id=?',
-                (value['state'], value.get('done', 0), value.get('failed', 0), value.get('error'), value.get('upgraded',0), value.get('skipped',0), value['task_id']))
+        # Persist the start transition and terminal results, not each file.
+        starting = value.get('phase')=='SCANNING' and 'scanned' not in value and value['state']=='RUNNING'
+        if value.get('task_id') and (starting or value['state'] in ('DONE', 'PARTIAL', 'FAILED', 'INTERRUPTED')):
+            self._record_task(value, 'task_id', value['task_id'])
 
     def _drain(self):
         for row in self.service.query("SELECT id,share_code,password FROM telegram_imports WHERE state='PENDING' ORDER BY id LIMIT 100"):
@@ -587,21 +631,39 @@ class TelegramMonitor:
                 state = result['state']
                 if state == 'QUEUE_FULL': return
                 if state in ('RUNNING', 'QUEUED', 'ALREADY_QUEUED'):
-                    self.service.query('UPDATE telegram_imports SET state=?,task_id=?,error=NULL WHERE id=?',
-                        ('RUNNING' if state == 'RUNNING' else 'QUEUED', result['task_id'], row['id']))
+                    self.service.query('UPDATE telegram_imports SET state=?,task_id=?,error=NULL,updated_at=?,attempts=attempts+1 WHERE id=?',
+                        ('RUNNING' if state == 'RUNNING' else 'QUEUED', result['task_id'], time.time(),row['id']))
                 else:
-                    self.service.query("UPDATE telegram_imports SET state='FAILED',error='START_FAILED' WHERE id=?", (row['id'],))
+                    self.service.query("UPDATE telegram_imports SET state='FAILED',error='START_FAILED',attempts=attempts+1,updated_at=?,finished_at=? WHERE id=?", (time.time(),time.time(),row['id']))
 
     def retry(self, entry_id):
         if type(entry_id) is not int or entry_id <= 0: raise ValueError('Invalid Telegram import')
         return self._submit(self._retry, entry_id)
 
     async def _retry(self, entry_id):
-        row = self.service.query("SELECT id FROM telegram_imports WHERE id=? AND state IN ('FAILED','PARTIAL','INTERRUPTED') AND share_code!=''", (entry_id,), one=True)
-        if not row: return {'state': 'RETRY_UNAVAILABLE'}
-        self.service.query("UPDATE telegram_imports SET state='PENDING',task_id=NULL,error=NULL WHERE id=? AND state IN ('FAILED','PARTIAL','INTERRUPTED') AND share_code!=''", (entry_id,))
-        self._next_poll = 0
-        return {'state': 'RETRY_QUEUED'}
+        return self._queue_retries(entry_id)
+
+    def retry_all(self):
+        return self._submit(self._retry_all)
+
+    async def _retry_all(self):
+        return self._queue_retries()
+
+    def _queue_retries(self, entry_id=None):
+        # One bounded update under the same lock as worker progress. Repeated
+        # clicks only select terminal records still eligible for a new attempt.
+        condition = RETRYABLE + (' AND id=?' if entry_id is not None else '')
+        args = (entry_id,) if entry_id is not None else ()
+        with self.service._lock:
+            eligible = self.service.query('SELECT count(*) n FROM telegram_imports WHERE ' + condition, args, one=True)['n']
+            pending = self.service.query("SELECT count(*) n FROM telegram_imports WHERE state IN ('PENDING','QUEUED','RUNNING')", one=True)['n']
+            queued = min(eligible, max(0, BACKLOG_LIMIT - pending))
+            if queued:
+                self.service.query("UPDATE telegram_imports SET state='PENDING',task_id=NULL,error=NULL,done=0,failed=0,upgraded=0,skipped=0,total=NULL,started_at=NULL,finished_at=NULL,updated_at=? "
+                    'WHERE id IN (SELECT id FROM telegram_imports WHERE ' + condition + ' ORDER BY id LIMIT ?)', (time.time(),*args, queued))
+                self._next_poll = 0
+        state = ('RETRY_QUEUED' if entry_id is not None else 'RETRY_BATCH_QUEUED') if queued else 'RETRY_QUEUE_FULL' if eligible else 'RETRY_UNAVAILABLE'
+        return {'state': state, 'queued': queued, 'remaining': eligible - queued, 'subscription_enabled': self.settings['enabled']}
 
     def close(self):
         with self._guard:

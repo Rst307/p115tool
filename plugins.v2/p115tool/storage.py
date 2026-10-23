@@ -17,6 +17,7 @@ import uuid
 from urllib.parse import urlsplit, parse_qs
 from .models import RemoteFile, MissingFile, RemoteError, SafetyError, ToolError, ShareRejected
 from .strm import classify, safe_parts
+from .import_history import display_name
 
 UA = 'p115tool-storage-validation'
 PLAYBACK_GUARD = 24 * 3600
@@ -185,7 +186,7 @@ class StorageManager:
             for task in self._import_tasks:
                 if task['id']==value.get('task_id'):
                     task.update({key:value[key] for key in
-                        ('state','done','failed','total','error','phase','scanned','found','upgraded','skipped') if key in value})
+                        ('state','done','failed','total','error','phase','scanned','found','upgraded','skipped','media_names','started_at') if key in value})
                     if task['state'] not in ('QUEUED','RUNNING'): self._trim_import_tasks()
                     break
 
@@ -438,7 +439,7 @@ class StorageManager:
             return self._launch(action,args)
 
     def _launch(self, action, args):
-        task={'task_id':args[2]} if action=='import' else {}
+        task={'task_id':args[2], 'started_at':time.time()} if action=='import' else {}
         self._job({'state':'RUNNING','action':action,'done':0,'failed':0,'error':None,
                    'phase':'SCANNING' if action in ('scan','virtualize_all','import') else 'STARTING','current':None,**task})
         self._thread=threading.Thread(target=self._run,args=(action,args),name='p115tool-storage',daemon=True)
@@ -453,7 +454,7 @@ class StorageManager:
     def _run(self, action, args):
         job={'state':'RUNNING','action':action,'done':0,'failed':0,'error':None,'results':[],
              'phase':'SCANNING' if action in ('scan','virtualize_all') else 'STARTING','current':None}
-        if action=='import': job['task_id']=args[2]
+        if action=='import': job.update(task_id=args[2], started_at=time.time(), media_names=[])
         try:
             if action=='import': self.import_share(*args[:2],job=job,auto_upgrade=args[3])
             elif action=='scan': self.scan_actual(job)
@@ -590,6 +591,9 @@ class StorageManager:
                     raise SafetyError('Share mapping changed')
                 destination=self.service.virtual_organizer(relative)
                 safe_parts(destination)
+                name=display_name(str(destination), (code,password))
+                if name and name not in job.setdefault('media_names',[]) and len(job['media_names'])<10:
+                    job['media_names'].append(name)
                 if self.service._stop.is_set(): raise InterruptedError()
                 outcome=self.upgrades.consider(media_id,file,destination,relative,code,password,auto_upgrade,members)
                 if outcome:
