@@ -1,37 +1,36 @@
 {
   "files": {
-    "__federation_expose_Config-BdKL4bEl.js": "84bb6681f496a7fc65f0e9d60d0fbb3a47a107480ff237e4d6f32942e9d69698",
-    "__federation_expose_Page-EoLwh5n3.js": "df3d9274426ad58eef89cabb6668aa1d355e6cf2db265bf41c874a488e67e3cf",
+    "__federation_expose_Config-DawV-5_Z.js": "a9b019ccc3072feb6ee1ebb7fa7e608ae56090e43a958d42b62fac05b7046957",
+    "__federation_expose_Page-DC-3WdIR.js": "ad1794ac452db3253d3d098714406ff8fe6cb880ead16275e06d61c7dbaa3c72",
     "__federation_fn_import-E6wRZccp.js": "11a2d68813601dffb4a4bb619cabf25526a7a445b054e418100e24128f6bdca2",
     "remoteEntry.js": "68246253b0b539a5ff86b05ba65ce12b7585838ed80f3b5a7ba5c34c4a5bc7f4",
-    "telegram-config.js": "cc4556ff153ba73b0f5f913c5d639757930afdbc42f79fd0a5e31315fd47b068",
+    "telegram-config.js": "c0f09475b0f3f6b016c9129f46d7c71fbd606634f050b28914e9478b0ef27a67",
     "telegram-navigation.js": "7f52b4d6606d07a16bdbe43d9267fecf4adf8cd96de08fd267fd8229d6589d1a",
-    "telegram-page.js": "eebeff15abc846dd54c44a53757e00aa668198f99b876eadbd32b698a76d8305",
+    "telegram-page.js": "3cadf5291b202267ff600a4d3289f9788e0c2c29fac2d7d649dcca1eee488c6d",
     "telegram-panel.js": "d706254c8b8eaf3ef2a146c757104d64840dff4e9cd36d4fa780291f2594359f",
     "telegram.css": "0bbc3c93d28bc67d5dce0effd4b9f4ed54bf8dc59b07c7619a1b85a4e181b15b",
     "ui-8x_RroF5.js": "553c8d123629b6b0973f04aad53ed63c24dca9e6d54f90a8d72d39d349903fb3",
     "ui-8ywdPfsL.css": "2ef95b8b815c42df3917d25905df1d3adeb130053ee97be788d2c60f59650136"
   },
-  "baseline_sources": {
+  "sources": {
+    "frontend/package.json": "a5f342290deb1e01e46e50f6e19cf811779572a4c05b9b5c9193460e0ddb0e25",
     "frontend/package-lock.json": "9fccb33dde7435c7fbd73b4a33f3b004c580ded3c57dd7fd4b9ac9cbe44bbb90",
+    "frontend/index.html": "921c67d0d327d302baaa34fc94aaf61e522fe5fa28d14967a14b1761e47a1dfa",
     "frontend/vite.config.js": "8466c6e1a41893b25501139906a86a8d932bd5d51cccc102782a58b8a6c5f3a0",
-    "frontend/src/config-schema.json": "a5338d955b09046ec0b16f3a9625b7955c763aae07dc722e474e6078745f932f",
-    "frontend/src/Config.vue": "0834b061f43a632cc7452a0b5856558d7acaec85c86160aa8345c68613df382c",
+    "frontend/src/config-schema.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+    "frontend/src/Config.vue": "53af80e94eef008fad39828c2aeaeb0532e2013ce148b54fa53e6af47c3d7ab6",
     "frontend/src/host.js": "1b6b3ba9b35180c0b7338c1c464a9fadcaab6259e1a2e47139e2394ef9b60fb6",
     "frontend/src/main.js": "60929e90fdb9d5090b51b772a517645b8da18e347a2f0362de34be7bc7fae3a1",
-    "frontend/src/navigation.js": "b2a8f9d5d2cf5ea3bc6d40dc14a9886643e1a412cdc644ff9cc643a84c6a3bd4",
-    "frontend/src/Page.vue": "5211b3a5256dd00023f524b9678da15986464483b282ad38ff95e5c3c6049e44",
-    "frontend/src/storage.js": "8bd8d808b662f16aadce2855b5a3db5fc139041a4125d7acd165296063bbe430",
-    "frontend/src/Storage.vue": "290595db16b5e45569510f84e0e8286df58d53c01ae34c377a7941a468dd0e79",
-    "frontend/src/ui.css": "149d6317202234286588b8c32c28c346f84dcbbecb5855823060be4ebc11a342"
-  },
-  "sources": {
-    "frontend/telegram/config.js": "cc4556ff153ba73b0f5f913c5d639757930afdbc42f79fd0a5e31315fd47b068",
+    "frontend/src/navigation.js": "ea3de90129f92affb9c56602e37f6704c1db3bffd36925bb1eb49b3bd6d16b6a",
+    "frontend/src/Page.vue": "a9afd3db24bb5228002cfd065065e0c531e9528135dc67d4e0da398e18f9368c",
+    "frontend/src/storage.js": "2ee93a1c09efd61bc86dc59f1548671f19092a71b3079e11a7c9c832bc3a3452",
+    "frontend/src/Storage.vue": "e47a4dfce18e3fdca130e56d726e13faca5f27cbd05bb726b97f40ba2cd22c49",
+    "frontend/src/ui.css": "66155b6a2f5c3f20f8b306ff32948cbcd5943fbe40a9bfc5f53790ca2f707d5d",
+    "frontend/telegram/config.js": "c0f09475b0f3f6b016c9129f46d7c71fbd606634f050b28914e9478b0ef27a67",
     "frontend/telegram/navigation.js": "7f52b4d6606d07a16bdbe43d9267fecf4adf8cd96de08fd267fd8229d6589d1a",
-    "frontend/telegram/page.js": "eebeff15abc846dd54c44a53757e00aa668198f99b876eadbd32b698a76d8305",
+    "frontend/telegram/page.js": "3cadf5291b202267ff600a4d3289f9788e0c2c29fac2d7d649dcca1eee488c6d",
     "frontend/telegram/panel.js": "d706254c8b8eaf3ef2a146c757104d64840dff4e9cd36d4fa780291f2594359f",
     "frontend/telegram/remoteEntry.js": "68246253b0b539a5ff86b05ba65ce12b7585838ed80f3b5a7ba5c34c4a5bc7f4",
-    "frontend/telegram/telegram.css": "0bbc3c93d28bc67d5dce0effd4b9f4ed54bf8dc59b07c7619a1b85a4e181b15b",
-    "tools/build_telegram_ui.py": "5fad5fe71fe681dff8b6c2e9d25d89418c70882272161d940babecc47460c9e9"
+    "frontend/telegram/telegram.css": "0bbc3c93d28bc67d5dce0effd4b9f4ed54bf8dc59b07c7619a1b85a4e181b15b"
   }
 }

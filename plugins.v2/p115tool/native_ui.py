@@ -60,6 +60,8 @@ def dispatch(plugin,route,payload):
             return service.storage.delete_records(payload['ids'])
         if route=='action' and payload=={'action':'cleanup_copies'}: return service.storage.start('cleanup')
         if route=='action' and payload=={'action':'reconcile_recycle'}: return service.storage.start('reconcile_purge')
+        if route=='action' and payload=={'action':'reconcile_empty_recycle'}: return service.storage.start('reconcile_empty_recycle')
+        if route=='data' and payload=={'kind':'recycle_empty'}: return service.storage.recycle.status()
         if route=='action' and set(payload)=={'action','id','link','password'} and payload['action']=='attach_share':
             return service.storage.attach_share(payload['id'],payload['link'],payload['password'])
         if route=='data' and set(payload)=={'kind','page','storage','search'} and payload['kind']=='storage':

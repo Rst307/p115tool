@@ -100,8 +100,11 @@ def private_write(path, text):
     temporary = path.with_suffix(path.suffix + '.tmp')
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.fchmod(fd, 0o600)
         with os.fdopen(fd, 'w', encoding='utf-8') as output:
+            # Windows has no fchmod. Keep the descriptor owned by the context
+            # even when permission setup fails, so the temporary file closes.
+            if hasattr(os, 'fchmod'): os.fchmod(output.fileno(), 0o600)
+            else: os.chmod(temporary, 0o600)
             output.write(text); output.flush(); os.fsync(output.fileno())
         os.replace(temporary, path)
     finally:

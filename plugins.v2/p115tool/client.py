@@ -284,13 +284,16 @@ class P115ClientManager:
 
     def recycle_entries(self):
         """Complete bounded enumeration; never infer an entry ID from a file ID."""
-        entries=[]; seen=set(); offset=0
+        entries=[]; seen=set(); offset=0; expected_count=None
         while True:
             response=check_response(self.call('recyclebin_list',{'offset':offset,'limit':1000}))
             rows=response.get('data'); count=response.get('count')
             if isinstance(rows,dict): count=rows.get('count');rows=rows.get('list')
             if not isinstance(rows,list) or type(count) not in (int,str) or not str(count).isdigit() or int(count)>100000:
                 raise SafetyError('Unsupported recycle listing')
+            if expected_count is not None and int(count)!=expected_count:
+                raise SafetyError('Incomplete recycle listing')
+            expected_count=int(count)
             for row in rows:
                 if not isinstance(row,dict): raise SafetyError('Unsupported recycle entry')
                 rid=str(row.get('rid') or row.get('id') or '')
@@ -305,6 +308,16 @@ class P115ClientManager:
         if not isinstance(rid,str) or not re.fullmatch(r'[1-9][0-9]{0,19}',rid):
             raise SafetyError('Invalid recycle deletion target')
         check_response(self.call('recyclebin_clean',{'tid':rid},password=self.config.recycle_password))
+
+    def purge_recycle_batch(self, rids):
+        # Empty tid means erase the entire live bin in the SDK. Always send
+        # explicit, bounded snapshot targets, including for scheduled emptying.
+        if (not isinstance(rids,list) or not 1<=len(rids)<=100 or len(set(rids))!=len(rids)
+                or any(not isinstance(rid,str) or not re.fullmatch(r'[1-9][0-9]{0,19}',rid) for rid in rids)):
+            raise SafetyError('Invalid recycle deletion targets')
+        if not re.fullmatch(r'[0-9]{6}',self.config.recycle_password):
+            raise SafetyError('Recycle security key required')
+        check_response(self.call('recyclebin_clean',{'tid':','.join(rids)},password=self.config.recycle_password))
 
     def probe_range(self, link, ua, size):
         from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler

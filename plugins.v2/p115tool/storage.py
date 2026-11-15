@@ -154,6 +154,8 @@ class StorageManager:
                 db.execute('UPDATE resource_copies SET stage=? WHERE stage=?',(after,before))
         job=self.job()
         if job['state']=='RUNNING': job['state']='INTERRUPTED'; self._job(job)
+        from .recycle import RecycleCleaner
+        self.recycle=RecycleCleaner(self)
         from .quality import VirtualUpgrades
         self.upgrades=VirtualUpgrades(self)
 
@@ -420,7 +422,7 @@ class StorageManager:
             if payload: raise ValueError('Invalid scan')
             if not self.config.source_cids: return {'state':'SOURCES_REQUIRED'}
             args=()
-        elif action in ('cleanup','reconcile_purge'):
+        elif action in ('cleanup','reconcile_purge','empty_recycle','reconcile_empty_recycle'):
             if payload: raise ValueError('Invalid cleanup')
             args=()
         else: raise ValueError('Unknown storage action')
@@ -430,7 +432,7 @@ class StorageManager:
             if self.service._closed: raise ToolError('Service stopped')
             if action=='import': return self._enqueue_import(args)
             if self.busy:
-                if self.job()['action']=='scan' and action!='scan' and self._pending_action is None:
+                if self.job()['action']=='scan' and action not in ('scan','empty_recycle') and self._pending_action is None:
                     # Keep one explicit submission in memory, never replay on restart.
                     self._pending_action=(action,{**payload,**({'ids':list(payload['ids'])} if 'ids' in payload else {})})
                     return {'state':'QUEUED'}
@@ -460,6 +462,8 @@ class StorageManager:
             elif action=='scan': self.scan_actual(job)
             elif action=='cleanup': self.cleanup(job)
             elif action=='reconcile_purge': self.reconcile_purges(job)
+            elif action=='empty_recycle': self.recycle.empty(job)
+            elif action=='reconcile_empty_recycle': self.recycle.reconcile(job)
             else:
                 if action=='virtualize_all':
                     # Reuse a recent complete snapshot (also the scan just awaited
@@ -724,6 +728,7 @@ class StorageManager:
 
     def prepare_purge(self, file, enabled=None):
         if not (self.config.recycle_purge if enabled is None else enabled): return None
+        if self.recycle.pending(): raise SafetyError('Recycle purge needs attention')
         if self.service.query("SELECT id FROM recycle_purge_intents WHERE stage!='DONE' LIMIT 1",one=True):
             raise SafetyError('Recycle purge needs attention')
         entries=self.client.recycle_entries()

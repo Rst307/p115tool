@@ -98,7 +98,7 @@ class MonitorTests(unittest.TestCase):
         self.assertNotIn('a'*32,snapshot);self.assertNotIn('secret',snapshot)
         self.assertEqual(self.monitor.settings['api_hash'],'a'*32)
         self.assertEqual(self.monitor.settings['proxy'],'socks5://user:secret@localhost:1080')
-        self.assertEqual(os.stat(self.monitor.settings_path).st_mode & 0o777,0o600)
+        if os.name!='nt': self.assertEqual(os.stat(self.monitor.settings_path).st_mode & 0o777,0o600)
         self.monitor.configure({**settings,'clear_proxy':True})
         self.assertEqual(self.monitor.settings['proxy'],'')
 
@@ -214,7 +214,7 @@ class MonitorTests(unittest.TestCase):
         snapshot=json.dumps(self.monitor.snapshot())
         for secret in ('13800000000','temporary-hash','12345','saved-session'): self.assertNotIn(secret,snapshot)
         self.assertEqual(self.monitor._phone,'');self.assertEqual(self.monitor._phone_hash,'')
-        self.assertEqual(os.stat(self.monitor.session_path).st_mode & 0o777,0o600)
+        if os.name!='nt': self.assertEqual(os.stat(self.monitor.session_path).st_mode & 0o777,0o600)
 
     def test_two_factor_error_is_safe_and_keeps_login_context(self):
         error=type('SessionPasswordNeededError',(Exception,),{})('secret raw error')
@@ -282,6 +282,17 @@ class MonitorTests(unittest.TestCase):
         self.assertNotIn('api_hash',result['settings'])
         with self.assertRaises(ValueError):dispatch(plugin,'action',{'action':'telegram_settings','settings':{'enabled':True}})
         with self.assertRaises(ValueError):dispatch(plugin,'action',{'action':'telegram_send_code','phone':'secret'})
+
+
+class PrivateWriteTests(unittest.TestCase):
+    def test_permission_failure_closes_temporary_file_and_preserves_original(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target=Path(directory)/'settings.json'
+            target.write_text('original',encoding='utf-8')
+            with patch('p115tool.telegram.os.fchmod',side_effect=OSError('permission failure'),create=True):
+                with self.assertRaises(OSError):private_write(target,'replacement')
+            self.assertEqual(target.read_text('utf-8'),'original')
+            self.assertFalse(target.with_suffix('.json.tmp').exists())
 
 
 if __name__=='__main__': unittest.main()

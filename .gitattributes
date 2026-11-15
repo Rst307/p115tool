@@ -1,1 +1,2 @@
 plugins.v2/p115tool/dist/assets/* -text
+frontend/** -text

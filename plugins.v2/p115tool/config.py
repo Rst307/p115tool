@@ -26,6 +26,8 @@ class Config:
     temp_cleanup: bool = True
     recycle_purge: bool = False
     recycle_password: str = ''
+    recycle_empty_scheduled: bool = False
+    recycle_empty_time: str = '04:00'
     allowed_cdn_suffixes: list = field(default_factory=lambda: ['115.com','115cdn.com','115cdn.net','115cdn.cn'])
     media_extensions: list = field(default_factory=lambda: ['.mkv','.mp4','.avi','.mov','.ts','.m2ts','.iso','.wmv','.flv','.m4v','.mpg','.mpeg'])
 
@@ -36,7 +38,7 @@ class Config:
         if 'source_cids_json' in data:
             data['source_cids'] = json.loads(data.pop('source_cids_json'))
         data = {k:v for k,v in data.items() if k in {f.name for f in fields(cls)}}
-        for k in ('enabled','scheduled','organize_scheduled','auto_after_transfer','temp_cleanup','recycle_purge'):
+        for k in ('enabled','scheduled','organize_scheduled','auto_after_transfer','temp_cleanup','recycle_purge','recycle_empty_scheduled'):
             if k in data and type(data[k]) is not bool: raise ValueError('Invalid boolean')
         if 'request_timeout' in data:
             v=data['request_timeout']
@@ -48,6 +50,10 @@ class Config:
             raise ValueError('Invalid organize target')
         if not isinstance(cfg.recycle_password,str) or (cfg.recycle_password and not re.fullmatch(r'[0-9]{6}',cfg.recycle_password)):
             raise ValueError('Invalid recycle security key')
+        if cfg.recycle_empty_scheduled and not cfg.recycle_password:
+            raise ValueError('Recycle security key required')
+        if not isinstance(cfg.recycle_empty_time,str) or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',cfg.recycle_empty_time):
+            raise ValueError('Invalid recycle empty time')
         if not isinstance(cfg.temp_cid,str) or (cfg.temp_cid and not re.fullmatch(r'[1-9][0-9]{0,19}',cfg.temp_cid)):
             raise ValueError('Invalid temporary directory')
         if isinstance(cfg.temp_days,str) and re.fullmatch(r'\d{1,3}',cfg.temp_days): cfg.temp_days=int(cfg.temp_days)

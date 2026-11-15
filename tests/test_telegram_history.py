@@ -1,4 +1,5 @@
 import json
+from contextlib import closing
 import sqlite3
 from pathlib import Path
 import tempfile
@@ -124,7 +125,7 @@ class HistoryTests(unittest.TestCase):
 
     def test_original_schema_migrates_and_interrupts_inflight_without_replay(self):
         self.service.close()
-        with sqlite3.connect(self.service.path) as db:
+        with closing(sqlite3.connect(self.service.path)) as db, db:
             db.execute('DROP TABLE telegram_imports')
             db.execute('''CREATE TABLE telegram_imports (
                 id INTEGER PRIMARY KEY,fingerprint TEXT UNIQUE NOT NULL,channel TEXT NOT NULL,
