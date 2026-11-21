@@ -13,6 +13,7 @@ except ModuleNotFoundError:
 SAFETY_REASONS={
     'MoviePilot 115 authorization unavailable':'MOVIEPILOT_AUTH_UNAVAILABLE',
     'This operation requires 115 Cookie mode':'COOKIE_MODE_REQUIRED',
+    'Temporary copy must be transferred in 115 Cookie mode':'COOKIE_TRANSFER_REQUIRED',
     '115 file identity mismatch':'FILE_IDENTITY_MISMATCH',
     'Temporary identity changed':'TEMP_FILE_IDENTITY_CHANGED',
     'Temporary directory identity changed':'TEMP_FOLDER_IDENTITY_CHANGED',

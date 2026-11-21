@@ -55,7 +55,7 @@ async function save() {
   <v-tabs v-model="tab" color="primary" class="mb-4" aria-label="配置板块"><v-tab value="organize">整理</v-tab><v-tab value="strm">STRM</v-tab><v-tab value="storage">存储</v-tab><v-tab value="connection">通用连接</v-tab></v-tabs>
   <section v-if="tab==='storage'" class="p115-section">
     <h3>实际存储与虚拟存储</h3><p class="p115-note mt-2 mb-4">实际视频长期保留。虚拟资源保留分享和STRM，使用临时转存副本播放，副本到期清理后按需重新转存。</p>
-    <v-alert v-if="config.use_moviepilot_auth" type="info" variant="tonal">虚拟存储、临时副本清理和回收站设置在 Cookie 模式下生效。</v-alert>
+    <v-alert v-if="config.use_moviepilot_auth" type="info" variant="tonal">原生授权可以播放已核实的临时副本。分享导入、转存、清理和回收站设置在 Cookie 模式下生效。</v-alert>
     <template v-else>
     <v-text-field v-model="config.temp_cid" label="115临时副本目录ID" inputmode="numeric" variant="outlined" hint="请选择专用非根目录，插件会为每个资源创建独立子目录。" persistent-hint/>
     <v-btn variant="tonal" class="mt-3 mb-5" prepend-icon="mdi-folder-search-outline" @click="open('temp_cid')">选择临时副本目录</v-btn>
@@ -79,7 +79,7 @@ async function save() {
   <section v-if="tab==='connection'" class="p115-section">
     <div class="p115-section-heading"><div><h3>115连接</h3><p>保存连接方式后即可浏览网盘目录。</p></div></div>
     <v-switch v-model="config.use_moviepilot_auth" label="使用 MoviePilot 原生 115 授权" color="primary" hide-details class="mb-3"/>
-    <v-alert v-if="config.use_moviepilot_auth" type="info" variant="tonal" class="mb-4">请先在 MoviePilot 的存储设置登录 115。原生授权支持目录扫描、生成 STRM 和实际文件 302 播放。分享、虚拟播放、Telegram 导入和回收站操作需要 Cookie 模式。</v-alert>
+    <v-alert v-if="config.use_moviepilot_auth" type="info" variant="tonal" class="mb-4">请先在 MoviePilot 的存储设置登录 115。原生授权支持目录扫描、生成 STRM，以及实际文件和已核实临时副本的播放。分享导入、新转存、Telegram 导入和回收站操作使用 Cookie 模式。</v-alert>
     <v-text-field v-else v-model="config.cookie" type="password" label="115 Cookie" autocomplete="off" variant="outlined" density="comfortable" hint="用于连接你的115账号；输入内容默认隐藏。" persistent-hint class="mb-5"/>
     <v-text-field v-model="config.request_timeout" type="number" min="5" max="120" label="115请求超时（秒）" hint="5–120秒，默认30秒" persistent-hint variant="outlined" density="comfortable"/>
   </section>

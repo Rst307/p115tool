@@ -86,7 +86,7 @@ onUnmounted(()=>{clearInterval(timer);link.value='';password.value='';share.valu
   <v-alert v-if="job.action==='scan' && ['FAILED','INTERRUPTED'].includes(job.state)" type="warning" variant="tonal" class="mb-4">媒体库扫描未完成，保留上次完整扫描结果。请检查115连接和源目录后重新扫描。</v-alert>
   <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{error}}</v-alert>
   <v-alert v-if="notice" type="info" variant="tonal" class="mb-4">{{notice}}</v-alert>
-  <v-alert v-if="nativeAuth" type="info" variant="tonal" class="mb-4">当前使用 MoviePilot 原生授权。分享导入、虚拟播放、副本清理和回收站操作需要 Cookie 模式。</v-alert>
+  <v-alert v-if="nativeAuth" type="info" variant="tonal" class="mb-4">当前使用 MoviePilot 原生授权。虚拟资源可播放已核实的副本；没有副本时，切回 Cookie 模式完成转存后即可播放。分享导入、副本清理和回收站操作使用 Cookie 模式。</v-alert>
   <template v-else>
   <v-alert v-if="tempConfigured===false" type="warning" variant="tonal" class="mb-4">{{temporaryStorageHint}}<div class="mt-2"><v-btn variant="text" @click="emit('configure')">打开存储设置</v-btn></div></v-alert>
   <div class="p115-actions mb-4"><v-btn color="primary" prepend-icon="mdi-link-plus" :disabled="shareImportBlocked" @click="openImport()">添加115分享</v-btn><v-btn variant="tonal" :disabled="blocked || !actualSelection.length" @click="allActual=false;purgeSource=true;consent=false;virtualDialog=true">转为虚拟存储（{{actualSelection.length}}）</v-btn><v-btn variant="tonal" :disabled="blocked || !sourcesConfigured" @click="allActual=true;purgeSource=true;consent=false;virtualDialog=true">全部实际存储转为虚拟</v-btn><v-btn variant="text" :disabled="blocked || !selected.length" @click="act({action:'reconcile_storage',ids:[...selected]})">只读核实结果</v-btn><v-btn variant="text" :disabled="blocked" @click="act({action:'cleanup_copies'})">清理到期副本</v-btn></div>

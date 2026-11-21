@@ -122,6 +122,10 @@ class P115ClientManager:
             try:
                 if self.config.use_moviepilot_auth:
                     result = self._call_moviepilot(method, args, kwargs)
+                    if method == 'fs_file' and response_code(result) == 20004:
+                        error = MissingFile('Remote file no longer exists')
+                        error.upstream_code = 20004
+                        raise error
                 else:
                     result=getattr(self._client(), method)(*args, timeout=self.config.request_timeout, **kwargs)
                 if (method=='share_send' and isinstance(result,dict) and result.get('state') in (False,0)
@@ -231,6 +235,8 @@ class P115ClientManager:
         if not rows:
             raise MissingFile("Remote file not found")
         data=rows[0] if isinstance(rows,list) else rows
+        if self.config.use_moviepilot_auth and data.get('parent_id') is None and 'category_id' in data:
+            data = {**data, 'parent_id': data['category_id']}
         file=normalize_file(data)
         if file.file_id!=str(fid):
             raise SafetyError('115 file identity mismatch')

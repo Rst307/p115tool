@@ -14,7 +14,7 @@ from p115client import P115OpenClient
 from p115tool import P115Tool
 from p115tool.client import P115ClientManager
 from p115tool.config import Config
-from p115tool.models import RemoteError, SafetyError
+from p115tool.models import RemoteError, RemoteFile, SafetyError
 from p115tool.native_ui import dispatch
 from p115tool.service import Service
 
@@ -43,6 +43,7 @@ class MoviePilotAuthorizationTests(unittest.TestCase):
         self.link = 'https://cdn.115.com/example'
         self.link_id = '20'
         self.extra_root = [{'fc': '0', 'fid': '11', 'pid': '10', 'fn': 'Empty'}]
+        self.copy_present = True
 
     def request(self, *, url, parse, **kwargs):
         path = urlsplit(url).path
@@ -55,14 +56,21 @@ class MoviePilotAuthorizationTests(unittest.TestCase):
                 trail.append({'cid': 11, 'name': 'Empty'})
                 files = []
             else:
-                files = [*self.extra_root, {'fc': '1', 'fid': '20', 'pid': '10', 'fn': 'Film.mkv',
-                                           'fs': '8', 'sha': 'A' * 40, 'pc': 'pc20'}]
+                files = list(self.extra_root)
+                if self.copy_present:
+                    files.append({'fc': '1', 'fid': '20', 'pid': '10', 'fn': 'Film.mkv',
+                                  'fs': '8', 'sha': 'A' * 40, 'pc': 'pc20'})
             resp = {'state': True, 'count': len(files), 'path': trail,
                     'data': files[kwargs['params']['offset']:][:kwargs['params']['limit']]}
         elif path == '/open/folder/get_info':
-            self.assertEqual(kwargs['params']['file_id'], '20')
-            resp = {'state': True, 'data': {'file_id': '20', 'file_name': 'Film.mkv', 'file_category': '1',
-                                             'parent_id': '10', 'file_size': '8', 'pick_code': 'pc20'}}
+            fid = kwargs['params']['file_id']
+            if fid == '10':
+                resp = {'state': True, 'data': {'file_id': '10', 'file_name': '电影',
+                                                'file_category': '0', 'category_id': '1'}}
+            else:
+                self.assertEqual(fid, '20')
+                resp = {'state': True, 'data': {'file_id': '20', 'file_name': 'Film.mkv', 'file_category': '1',
+                                               'parent_id': '10', 'file_size': '8', 'pick_code': 'pc20', 'sha1': 'A' * 40}}
         elif path == '/open/ufile/downurl':
             self.assertEqual(kwargs['data'], {'pick_code': 'pc20'})
             resp = {'state': True, 'data': {self.link_id: {'pick_code': 'pc20', 'url': {'url': self.link}}}}
@@ -126,6 +134,81 @@ class MoviePilotAuthorizationTests(unittest.TestCase):
         self.link += '?f=3'
         with self.assertRaisesRegex(SafetyError, 'requires cookies'):
             self.manager.normal_link('pc20', 'Emby-test', file_id='20')
+
+    def virtual_service(self, stage='READY', file_id='20'):
+        service = Service(self.config, self.manager)
+        self.addCleanup(service.close)
+        self.extra_root = []
+        media_id = 'v_native_7'
+        token = service.register(RemoteFile(media_id, 'Film.mkv', 8, 'A' * 40), '电影/Film.mkv')
+        service.query("INSERT INTO resource_storage(media_id,kind,stage,share_fid) VALUES(?, 'VIRTUAL', 'READY', '7')",
+                      (media_id,))
+        service.query('INSERT INTO resource_copies(media_id,root_cid,folder_name,folder_cid,file_id,stage) VALUES(?,?,?,?,?,?)',
+                      (media_id, '1', '电影', '10', file_id, stage))
+        return service, media_id, token
+
+    def test_native_302_reuses_a_verified_virtual_copy_with_the_existing_strm_token(self):
+        service, media_id, token = self.virtual_service()
+        plugin = P115Tool()
+        plugin._service = service
+        app = FastAPI()
+        play = plugin.get_api()[0]
+        app.add_api_route(play['path'], play['endpoint'], methods=play['methods'])
+        with TestClient(app) as client:
+            response = client.get('/play/' + token, follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers['location'], self.link)
+        self.assertGreater(service.storage.copy(media_id)['lease_until'], 0)
+        self.cookie_client.assert_not_called()
+
+    def test_native_reuses_late_verified_copy_without_replaying_receive(self):
+        service, media_id, token = self.virtual_service('RECEIVE_UNKNOWN', '')
+        self.assertEqual(service.play(token, 'Emby-test'), self.link)
+        self.assertEqual(service.storage.copy(media_id)['stage'], 'RECEIVE_UNKNOWN')
+        self.cookie_client.assert_not_called()
+
+    def test_native_no_live_virtual_copy_reports_transfer_requirement_without_writes(self):
+        service, media_id, token = self.virtual_service()
+        self.copy_present = False
+        before = service.storage.copy(media_id)
+        with self.assertRaisesRegex(SafetyError, 'Temporary copy must be transferred in 115 Cookie mode'):
+            service.play(token, 'Emby-test')
+        self.assertEqual(service.storage.copy(media_id), before)
+        self.cookie_client.assert_not_called()
+
+    def test_native_missing_folder_requires_transfer_and_keeps_checkpoint(self):
+        service, media_id, token = self.virtual_service('RECEIVE_UNKNOWN', '')
+        self.errors['/open/folder/get_info'] = {'state': False, 'code': 20004}
+        before = service.storage.copy(media_id)
+        with self.assertRaisesRegex(SafetyError, 'Temporary copy must be transferred in 115 Cookie mode'):
+            service.play(token, 'Emby-test')
+        self.transport.assert_called_once()
+        self.assertEqual(service.storage.copy(media_id), before)
+
+    def test_native_uses_verified_previous_edition_when_current_has_no_copy(self):
+        service, media_id, token = self.virtual_service()
+        selected = 'v_native_8'
+        service.register(RemoteFile(selected, 'Film-4K.mkv', 9, 'B' * 40), '电影/Film.mkv')
+        service.query("INSERT INTO resource_storage(media_id,kind,stage,share_fid) VALUES(?, 'VIRTUAL', 'READY', '8')",
+                      (selected,))
+        service.query('INSERT INTO virtual_selections VALUES(?,?,?,?)', (media_id, selected, media_id, 1))
+        self.assertEqual(service.play(token, 'Emby-test'), self.link)
+        self.assertIsNone(service.storage.copy(selected))
+        self.assertGreater(service.storage.copy(media_id)['lease_until'], 0)
+
+    def test_native_does_not_play_while_copy_deletion_is_unresolved(self):
+        service, media_id, token = self.virtual_service('DELETE_UNKNOWN')
+        with self.assertRaisesRegex(SafetyError, 'Temporary write outcome unresolved'):
+            service.play(token, 'Emby-test')
+        self.transport.assert_not_called()
+        self.assertEqual(service.storage.copy(media_id)['stage'], 'DELETE_UNKNOWN')
+
+    def test_native_does_not_play_a_replacement_for_a_recorded_ready_copy(self):
+        service, media_id, token = self.virtual_service(file_id='21')
+        with self.assertRaisesRegex(SafetyError, 'Temporary contents changed'):
+            service.play(token, 'Emby-test')
+        self.assertEqual(service.storage.copy(media_id)['lease_until'], 0)
+        self.cookie_client.assert_not_called()
 
     def test_native_mode_pauses_cookie_jobs_and_preserves_checkpoints(self):
         self.config.recycle_empty_scheduled = True

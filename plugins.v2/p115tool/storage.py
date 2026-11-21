@@ -967,12 +967,54 @@ class StorageManager:
             self.service.query("UPDATE resource_copies SET stage='RECEIVED',received_at=? WHERE media_id=?",(time.time(),media_id))
             return self.ensure_copy(media_id,recover_unknown=False)
 
+    def play_moviepilot_copy(self, media_id, ua):
+        with self._gate:
+            selection = self.service.query('SELECT selected_id,previous_id FROM virtual_selections WHERE stable_id=?',
+                                           (media_id,), one=True)
+            versions = (selection['selected_id'], selection['previous_id']) if selection else (media_id,)
+            unavailable = SafetyError('Temporary copy must be transferred in 115 Cookie mode')
+            for version_id in dict.fromkeys(versions):
+                if self.service._stop.is_set(): raise InterruptedError()
+                copy = self.copy(version_id)
+                if not copy: continue
+                unavailable.copy_state = copy['stage']
+                if copy['stage'] == 'EMPTY': continue
+                if copy['stage'] not in ('READY', 'RECEIVED', 'RECEIVE_UNKNOWN'):
+                    error = SafetyError('Temporary write outcome unresolved')
+                    error.copy_state = copy['stage']
+                    raise error
+                row = self.row(version_id)
+                if not row or not row['share_fid']: raise SafetyError('Share mapping unavailable')
+                try:
+                    self.validate_folder(copy)
+                    files = list(self.client.list_files(copy['folder_cid']))
+                except MissingFile:
+                    continue
+                if not files: continue
+                if len(files) != 1:
+                    raise SafetyError('Temporary contents not uniquely verified')
+                candidate = files[0]
+                check_file_id = copy['stage'] == 'READY' or bool(copy['file_id'])
+                if (check_file_id and candidate.file_id != copy['file_id']) or not matches(candidate, row, copy['folder_cid']):
+                    raise SafetyError('Temporary contents changed')
+                try: actual = self.client.stat(candidate.file_id)
+                except MissingFile: continue
+                if actual.file_id != candidate.file_id or not matches(actual, row, copy['folder_cid']):
+                    raise SafetyError('Temporary identity changed')
+                if not actual.pickcode: raise SafetyError('Temporary playback code unavailable')
+                try: link = self.client.normal_link(actual.pickcode, ua, file_id=actual.file_id)
+                except MissingFile: continue
+                self.service.query('UPDATE resource_copies SET lease_until=max(lease_until,?) WHERE media_id=?',
+                                   (time.time() + PLAYBACK_GUARD, version_id))
+                return link.url
+            raise unavailable
+
     def play(self, media_id, ua):
         if self.service._stop.is_set(): raise ToolError('Service stopped')
         row=self.row(media_id)
         if self.config.use_moviepilot_auth:
             if row and (row['kind'] != 'ACTUAL' or row['stage'] in ('SOURCE_DELETE_UNKNOWN', 'SOURCE_DELETING')):
-                raise SafetyError('This operation requires 115 Cookie mode')
+                return self.play_moviepilot_copy(media_id, ua)
             source = row or self.service.query('SELECT pickcode FROM strm_files WHERE file_id=?', (media_id,), one=True)
             return self.client.normal_link(source['pickcode'], ua, file_id=media_id).url
         if not row:
