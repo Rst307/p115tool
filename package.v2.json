@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "实际与虚拟存储、分享临时转存、分类STRM及302播放",
     "labels": "115,STRM,媒体管理",
-    "version": "0.2.52",
+    "version": "0.2.53",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.2.53": "修复115扫码生成图片时未传扫码编号导致的二维码参数错误，图片与扫码状态请求使用同一编号",
       "v0.2.52": "在通用连接新增115扫码配置Cookie。自动保存已验证的主会话，尝试生成同账号不同设备的备用会话并启用自动更新",
       "v0.2.51": "新增默认关闭的 115 Cookie 自动更新，通过同账号不同设备的有效备用会话续登。验证并持久保存新 Cookie，限频，续登后仅重试只读请求",
       "v0.2.50": "修复原生授权播放已有虚拟副本时的COOKIE_MODE_REQUIRED。只读核实临时副本后复用原STRM播放地址；无可用副本提示使用Cookie模式转存",

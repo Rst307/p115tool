@@ -20,6 +20,7 @@ from p115tool.native_ui import dispatch, routes
 PRIMARY = {'UID': '123_M1_5', 'CID': 'fixture-primary', 'SEID': 'fixture-session'}
 BACKUP = {'UID': '123_R2_6', 'CID': 'fixture-backup', 'SEID': 'fixture-session'}
 PNG = b'\x89PNG\r\n\x1a\nfixture-image'
+QR_CHALLENGE = {'uid': 'offline-fixture', 'sign': 'private-fixture', 'time': 1234}
 
 
 class CookieQrTests(unittest.TestCase):
@@ -43,12 +44,15 @@ class CookieQrTests(unittest.TestCase):
         self.calls.append((path, uid))
         if path.endswith('/qrcode'):
             self.assertFalse(parse)
+            if kwargs.get('params', {}).get('uid') != QR_CHALLENGE['uid']:
+                return b'{"state":false,"message":"invalid QR parameters"}'
             return PNG
         if host == 'my.115.com':
             result = {'state': uid in (self.primary['UID'], BACKUP['UID'])}
         elif path.endswith('/token/'):
-            result = {'state': True, 'data': {'uid': 'offline-fixture', 'sign': 'private-fixture', 'time': 1234}}
+            result = {'state': True, 'data': QR_CHALLENGE}
         elif path == '/get/status/':
+            self.assertEqual({key: kwargs.get('params', {}).get(key) for key in QR_CHALLENGE}, QR_CHALLENGE)
             result = {'code': 0, 'data': {'status': self.status}}
         elif path.endswith(('/prompt.php', '/slogin.php')):
             self.assertEqual(uid, PRIMARY['UID'])

@@ -147,7 +147,8 @@ class P115ClientManager:
                 or not re.fullmatch(r'[0-9]{1,16}', str(stamp))
                 or not isinstance(sign, str) or not 1 <= len(sign) <= 256):
             raise ValueError('Invalid 115 QR challenge')
-        image = P115Client.login_qrcode(uid, timeout=8, follow_redirects=False)
+        # p115client 0.0.9.7.2 does not forward the positional payload to the image request.
+        image = P115Client.login_qrcode(uid, params={'uid': uid}, timeout=8, follow_redirects=False)
         if not isinstance(image, bytes) or not image.startswith(b'\x89PNG\r\n\x1a\n') or len(image) > 1024 * 1024:
             raise ValueError('Invalid 115 QR image')
         return {'uid': uid, 'time': stamp, 'sign': sign}, image
