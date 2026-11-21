@@ -184,16 +184,31 @@ class Service:
                 if self._stop.is_set(): raise InterruptedError()
                 state['found']+=1
                 try:
-                    target=Path(row['strm_path'])
-                    if target.is_symlink():
-                        raise SafetyError('Unsafe output target')
-                    resolved=target.resolve()
-                    if not resolved.is_relative_to(self.strm.root) or resolved.suffix.lower()!='.strm':
-                        raise SafetyError('Unsafe output target')
-                    if not resolved.is_file():
+                    candidate=None
+                    recorded=Path(row['strm_path'])
+                    if recorded.is_symlink():
+                        if recorded.parent.resolve().is_relative_to(self.strm.root):
+                            raise SafetyError('Unsafe output target')
+                    else:
+                        resolved_recorded=recorded.resolve()
+                        if resolved_recorded.is_relative_to(self.strm.root) and resolved_recorded.suffix.lower()=='.strm' and resolved_recorded.is_file():
+                            candidate=resolved_recorded
+                    if candidate is None and row['relative_path']:
+                        try:
+                            fallback=self.strm.root.joinpath(*safe_parts(row['relative_path']+'.strm'))
+                        except SafetyError:
+                            fallback=None
+                        if fallback is not None:
+                            if fallback.is_symlink():
+                                raise SafetyError('Unsafe output target')
+                            resolved_fallback=fallback.resolve()
+                            if resolved_fallback.is_relative_to(self.strm.root) and resolved_fallback.suffix.lower()=='.strm' and resolved_fallback.is_file():
+                                candidate=resolved_fallback
+                    if candidate is None:
                         state['skipped']+=1
                         save_progress()
                         continue
+                    resolved=candidate
                     proof=self.query('SELECT file_id FROM strm_output_proofs WHERE path=?',(str(resolved),),one=True)
                     if proof and proof['file_id']!=row['file_id']:
                         state['skipped']+=1
@@ -366,12 +381,20 @@ class Service:
 
     def write_output(self, fid, destination, token, state=None):
         """Use the same ownership/checkpoint rules for actual and virtual STRMs."""
-        previous=self.query('SELECT strm_path FROM strm_files WHERE file_id=?',(fid,),one=True)
+        previous=self.query('SELECT strm_path,relative_path FROM strm_files WHERE file_id=?',(fid,),one=True)
         target=self.strm.root.joinpath(*safe_parts(destination+'.strm'))
         proof=self.query('SELECT * FROM strm_output_proofs WHERE path=?',(str(target),),one=True)
         digest=proof['digest'] if proof and proof['file_id']==fid else None
-        if proof is None and previous and previous['strm_path'] and Path(previous['strm_path']).resolve()==target.resolve():
-            digest=self.legacy_loopback_digest(target,token)
+        if proof is None and previous and previous['strm_path']:
+            same_recorded=Path(previous['strm_path']).resolve()==target.resolve()
+            same_relative=False
+            if not same_recorded and previous['relative_path']:
+                try:
+                    same_relative=self.strm.root.joinpath(*safe_parts(previous['relative_path']+'.strm')).resolve()==target.resolve()
+                except SafetyError:
+                    same_relative=False
+            if same_recorded or same_relative:
+                digest=self.legacy_loopback_digest(target,token)
         checkpoint=[]
         def before_replace():
             if self.query("SELECT id FROM strm_address_updates WHERE path=? AND state IN ('PENDING','UNKNOWN')",(str(target),),one=True):

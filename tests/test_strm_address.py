@@ -179,3 +179,25 @@ class AddressTests(unittest.TestCase):
         self.assertEqual(snap['skipped'], 1)
         self.assertEqual(snap['failed'], 0)
         self.assertEqual(self.path.read_text('utf-8'), self.old.replace('http://127.0.0.1:8000', 'https://emby.example.com:8443'))
+
+    def test_local_address_refresh_handles_old_strm_dir_paths(self):
+        # Record 1 moved to a new strm_dir, but its file exists at relative_path under current strm_dir.
+        old_dir = self.root / 'old_strm'
+        self.service.query('UPDATE strm_files SET strm_path=? WHERE file_id=?',
+                           (str(old_dir / '电视剧' / '欧美剧' / 'episode.mkv.strm'), '1'))
+        self.service.query('DELETE FROM strm_output_proofs')
+        # Record 2 points to old_strm and does NOT exist under current strm_dir: must be skipped, not failed.
+        self.service.query(
+            "INSERT INTO strm_files VALUES('old2','old2token_123456789012345678','pc9','gone.mkv',10,'XYZ','10','电影/外语电影/gone.mkv',?)",
+            (str(old_dir / '电影' / '外语电影' / 'gone.mkv.strm'),),
+        )
+        self.config.public_url = 'https://new.example.com'
+        self.service.refresh_addresses()
+        snap = self.service.snapshot()
+        self.assertEqual(snap['state'], 'DONE')
+        self.assertEqual(snap['generated'], 1)
+        self.assertEqual(snap['skipped'], 1)
+        self.assertEqual(snap['failed'], 0)
+        self.assertEqual(self.path.read_text('utf-8'), self.old.replace('http://127.0.0.1:8000', 'https://new.example.com'))
+        updated = self.service.query('SELECT strm_path FROM strm_files WHERE file_id=?', ('1',), one=True)
+        self.assertEqual(Path(updated['strm_path']).resolve(), self.path.resolve())

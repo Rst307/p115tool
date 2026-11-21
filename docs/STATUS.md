@@ -1,6 +1,15 @@
 # 当前插件范围与验证
 
-更新时间：2026-11-21（Asia/Shanghai），版本0.2.60。
+更新时间：2026-11-21（Asia/Shanghai），版本0.2.61。
+
+## 0.2.61 修复更换 STRM 输出目录后本地地址更新报 Unsafe output target
+
+- 针对数据库 `strm_files.strm_path` 仍保留历史旧 `strm_dir` 路径的记录，`Service.refresh_addresses()` 不再直接报错 `Unsafe output target`：
+  - 先检查记录路径是否在当前 `strm_dir` 内且存在；
+  - 若不在当前目录，则按 `relative_path` 在当前 `strm_dir` 内安全查找对应 `.strm`（严格校验非符号链接与目录边界），存在则原地更新播放地址并修正 `strm_path`，不存在则计入 `skipped` 跳过。
+- `write_output()` 在无 `strm_output_proofs` 时允许按当前 `strm_dir` 下的 `relative_path` 匹配旧版单行精确 token STRM 完成兼容升级（仍要求 `strm_path` 非空）。
+
+验证：新增旧输出目录迁移与缺失跳过回归测试；[test_strm_address.py](file:///d:/ImportantFileFolder/emby/mp/plugins/p115Tool/tests/test_strm_address.py) 与 `test_native_package` 共 15 项定向测试全部通过，未运行真实媒体联调。
 
 ## 0.2.60 修复本地 STRM 地址更新对旧版内网地址与过期记录的输出冲突
 
