@@ -39,11 +39,13 @@ class StorageGate:
         self._cond = threading.Condition(threading.Lock())
         self._writer = None
         self._writer_depth = 0
+        self._writer_name = None
         self._waiting_writers = 0
         self._readers = 0
         self._reader_depths = {}
         self._media_meta = threading.Lock()
         self._media_locks = {}
+        self._media_owners = {}
 
     def __enter__(self):
         tid = threading.get_ident()
@@ -57,6 +59,7 @@ class StorageGate:
                     self._cond.wait()
                 self._writer = tid
                 self._writer_depth = 1
+                self._writer_name = threading.current_thread().name
             finally:
                 self._waiting_writers -= 1
         return self
@@ -66,12 +69,15 @@ class StorageGate:
             self._writer_depth -= 1
             if self._writer_depth == 0:
                 self._writer = None
+                self._writer_name = None
                 self._cond.notify_all()
         return False
 
     @contextmanager
-    def shared(self):
+    def shared(self, media_id=None):
         tid = threading.get_ident()
+        started = time.monotonic()
+        logged_wait = False
         with self._cond:
             if self._writer == tid:
                 reentered_writer = True
@@ -79,7 +85,14 @@ class StorageGate:
                 reentered_writer = False
                 already_reading = self._reader_depths.get(tid, 0) > 0
                 while self._writer is not None or (not already_reading and self._waiting_writers > 0):
-                    self._cond.wait()
+                    self._cond.wait(timeout=2.0)
+                    if not logged_wait and time.monotonic() - started >= 2.0 and (
+                            self._writer is not None or (not already_reading and self._waiting_writers > 0)):
+                        logged_wait = True
+                        logger.warning(
+                            f'115播放等待全局门锁：媒体={media_id or "none"}，占用线程={self._writer_name or "waiting_writer"}，'
+                            f'读计数={self._readers}，等待写={self._waiting_writers}'
+                        )
                 self._readers += 1
                 self._reader_depths[tid] = self._reader_depths.get(tid, 0) + 1
         try:
@@ -98,7 +111,7 @@ class StorageGate:
 
     @contextmanager
     def for_media(self, media_id):
-        with self.shared():
+        with self.shared(media_id=media_id):
             with self._media_meta:
                 entry = self._media_locks.get(media_id)
                 if entry is None:
@@ -107,10 +120,25 @@ class StorageGate:
                 else:
                     lock = entry[0]
                     entry[1] += 1
+            acquired = False
             try:
-                with lock:
+                if not lock.acquire(timeout=2.0):
+                    owner = self._media_owners.get(media_id, 'unknown')
+                    logger.warning(f'115播放等待资源锁：媒体={media_id}，当前占用线程={owner}')
+                    lock.acquire()
+                acquired = True
+                prev_owner = self._media_owners.get(media_id)
+                self._media_owners[media_id] = threading.current_thread().name
+                try:
                     yield
+                finally:
+                    if prev_owner is None:
+                        self._media_owners.pop(media_id, None)
+                    else:
+                        self._media_owners[media_id] = prev_owner
             finally:
+                if acquired:
+                    lock.release()
                 with self._media_meta:
                     entry = self._media_locks[media_id]
                     entry[1] -= 1

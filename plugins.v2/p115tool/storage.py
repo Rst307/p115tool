@@ -850,8 +850,8 @@ class StorageManager:
         now=time.time()
         copies=self.service.query("SELECT * FROM resource_copies WHERE stage='READY' AND received_at+?<=? AND lease_until<=?",(self.config.temp_days*86400,now,now))
         for candidate in copies:
-            # Yield the gate between resources so playback can renew its lease.
-            with self._gate:
+            # Lock only the candidate being cleaned so playback of other virtual resources is never blocked.
+            with self._gate.for_media(candidate['media_id']):
                 copy=self.copy(candidate['media_id'])
                 if (not copy or copy['stage']!='READY' or copy['lease_until']>time.time()
                         or copy['received_at']+self.config.temp_days*86400>time.time()): continue
@@ -895,7 +895,7 @@ class StorageManager:
 
     def reconcile(self, media_id):
         """Explicit read-only reconciliation. No write SDK methods are called."""
-        with self._gate:
+        with self._gate.for_media(media_id):
             row=self.row(media_id)
             if not row:
                 source=self.service.query('SELECT * FROM strm_files WHERE file_id=?',(media_id,),one=True)

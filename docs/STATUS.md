@@ -1,6 +1,15 @@
 # 当前插件范围与验证
 
-更新时间：2026-11-21（Asia/Shanghai），版本0.2.56。
+更新时间：2026-11-21（Asia/Shanghai），版本0.2.57。
+
+## 0.2.57 修复临时副本清理阻塞虚拟播放并补充等锁诊断
+
+修复每小时 15 分运行的定时清理（`cleanup`）以及单资源核对（`reconcile`）持有全局独占门锁 `self._gate` 导致其他虚拟资源 302 播放被阻塞挂起的问题：
+
+- `StorageManager.cleanup` 与 `StorageManager.reconcile` 改为使用按资源分段锁 `self._gate.for_media(media_id)`，清理到期副本时仅锁定当前被清理的资源，不再阻塞其他虚拟资源的并发播放；同一资源的清理与播放及停机排空仍安全协调。
+- `StorageGate` 补充锁等待诊断：当播放请求等待全局门锁或资源锁超过 2 秒时，记录脱敏 `WARNING` 日志标明当前占用线程名称及等待计数，便于立即定位任何慢锁占用。
+
+验证：新增清理与并发播放互不阻塞回归测试，[test_playback_concurrency.py](file:///d:/ImportantFileFolder/emby/mp/plugins/p115Tool/tests/test_playback_concurrency.py) 共 14 项全部通过；未运行真实媒体联调。
 
 ## 0.2.56 增加 302 播放脱敏诊断日志
 

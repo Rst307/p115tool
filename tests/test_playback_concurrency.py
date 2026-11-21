@@ -324,3 +324,41 @@ class VirtualPlaybackEfficiencyTests(unittest.TestCase):
         self.assertIn('类型=KeyError', logs.output[0])
         self.assertIn('位置=test_playback_concurrency.py:', logs.output[0])
         self.assertNotIn('SECRET_TOKEN_OR_URL', logs.output[0])
+
+    def test_cleanup_of_one_virtual_resource_does_not_block_playback_of_another(self):
+        cleanup_entered = threading.Event()
+        release_cleanup = threading.Event()
+        warm_done = threading.Event()
+        warm_result = []
+
+        self.service.query("UPDATE resource_copies SET received_at=1,lease_until=1 WHERE media_id='v_a'")
+        self.service.query("UPDATE resource_copies SET received_at=9999999999,lease_until=9999999999 WHERE media_id='v_b'")
+
+        def slow_verify(row):
+            if row['file_id'] == 'v_a':
+                cleanup_entered.set()
+                if not release_cleanup.wait(4):
+                    raise TimeoutError('Fixture cleanup release not signaled')
+            return row['share_fid']
+
+        def run_cleanup():
+            self.service.storage.cleanup()
+
+        def play_other():
+            warm_result.append(self.service.play(self.token_b, 'Emby fixture'))
+            warm_done.set()
+
+        with patch.object(self.service.storage, 'verify_share', side_effect=slow_verify):
+            t_cleanup = threading.Thread(target=run_cleanup)
+            t_cleanup.start()
+            try:
+                self.assertTrue(cleanup_entered.wait(2), 'Cleanup did not start')
+                t_play = threading.Thread(target=play_other)
+                t_play.start()
+                completed_during_cleanup = warm_done.wait(1.5)
+            finally:
+                release_cleanup.set()
+            t_cleanup.join(4)
+            t_play.join(4)
+        self.assertTrue(completed_during_cleanup, 'Virtual playback was blocked by cleanup of another resource')
+        self.assertEqual(warm_result, [LINK + '/pc-b'])
