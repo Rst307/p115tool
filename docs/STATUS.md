@@ -1,6 +1,19 @@
 # 当前插件范围与验证
 
-更新时间：2026-11-21（Asia/Shanghai），版本0.2.58。
+更新时间：2026-11-21（Asia/Shanghai），版本0.2.59。
+
+## 0.2.59 新增「仅更新播放地址」纯本地 STRM 刷新
+
+针对修改 `public_url`（如从内网地址切换为公网域名）时，已有大量 STRM 重新递归扫描 115 网盘耗时过长的问题，新增纯本地批量替换能力：
+
+- **后端纯本地刷新**（`p115tool/service.py`、`p115tool/native_ui.py`）：
+  - 新增 `Service.start_address_refresh()` / `Service.refresh_addresses()` 及 `native/action` 的 `refresh_strm_addresses` 动作。
+  - 直接读取数据库 `strm_files` 中已有的实际与虚拟资源 STRM 记录（自动排除画质升级副版本与已移除记录），**不发起任何 115 远端接口请求**。
+  - 复用 `write_output()` 的安全检查与原子替换流程：严格校验路径位于 STRM 根目录内且非符号链接，核对 `strm_output_proofs` 摘要并保留手工编辑文件，记录 `strm_address_updates` 检查点，保留原 `token`、目录结构与文件名；本地已不存在的 `.strm` 跳过而不凭空重建。
+- **前端 STRM 页入口**（`frontend/src/Page.vue`）：
+  - 在 STRM 板块新增「仅更新播放地址」按钮，后台运行时按 `mode='refresh_addresses'` 显示专属状态、进度计数与跳过文件提示。
+
+验证：新增纯本地实际/虚拟 STRM 地址刷新（零远端调用与缺失文件跳过）及 `native_ui` 调度与手改文件保护测试；STRM 地址、页面打开与原生打包定向测试全部通过，未运行真实媒体联调。
 
 ## 0.2.58 Cookie 续登与 302 播放稳定性加固
 

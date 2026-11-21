@@ -10,11 +10,16 @@ const tab=ref('organize'),schedule=ref({scheduled:false,time:'02:00'}),target=re
 const enabled=ref(false),error=ref(''),status=ref(null),busy=ref(false)
 const sources=ref([]),selected=ref([]),organizeBusy=ref(false),organizeUnknown=ref(false),notice=ref('')
 const labels={IDLE:'尚未生成',RUNNING:'正在生成',DONE:'生成完成',PARTIAL:'部分文件失败',FAILED:'扫描失败',INTERRUPTED:'上次任务已中断，可重新生成'}
-const errors={SCAN_FAILED:'115目录扫描失败，请检查115连接和目录ID。已生成文件保留，修正配置后可重新生成。',OUTPUT_CONFLICT:'部分文件身份或输出路径存在冲突，请检查已有STRM与源文件。',FILE_GENERATION_FAILED:'部分文件生成失败，请检查输出目录权限和挂载。'}
+const addressLabels={IDLE:'尚未更新',RUNNING:'正在更新播放地址',DONE:'地址更新完成',PARTIAL:'部分地址更新失败',FAILED:'地址更新失败',INTERRUPTED:'上次地址更新已中断，可重试'}
+const errors={SCAN_FAILED:'115目录扫描失败，请检查115连接和目录ID。已生成文件保留，修正配置后可重新生成。',ADDRESS_REFRESH_FAILED:'本地STRM地址更新失败，请检查输出目录挂载和权限。',OUTPUT_CONFLICT:'部分文件身份或输出路径存在冲突，请检查已有STRM与源文件。',FILE_GENERATION_FAILED:'部分文件生成失败，请检查输出目录权限和挂载。'}
 const refreshing=ref(false), loaded=ref(false)
 const running=computed(()=>status.value?.state==='RUNNING')
+const isAddressMode=computed(()=>status.value?.mode==='refresh_addresses')
+const stateLabel=computed(()=>(isAddressMode.value ? addressLabels[status.value?.state] : labels[status.value?.state]) || '正在读取状态')
 const stateColor=computed(()=>({DONE:'success',PARTIAL:'warning',FAILED:'error',INTERRUPTED:'warning',RUNNING:'primary'}[status.value?.state] || 'secondary'))
-const metrics=computed(()=>[{label:'发现影视文件',value:status.value?.found ?? 0},{label:'生成成功',value:status.value?.generated ?? 0},{label:'生成失败',value:status.value?.failed ?? 0},{label:'已索引文件',value:status.value?.count ?? 0}])
+const metrics=computed(()=>isAddressMode.value
+  ? [{label:'检查本地STRM',value:status.value?.found ?? 0},{label:'更新成功',value:status.value?.generated ?? 0},{label:'更新失败',value:status.value?.failed ?? 0},{label:'已索引文件',value:status.value?.count ?? 0}]
+  : [{label:'发现影视文件',value:status.value?.found ?? 0},{label:'生成成功',value:status.value?.generated ?? 0},{label:'生成失败',value:status.value?.failed ?? 0},{label:'已索引文件',value:status.value?.count ?? 0}])
 function configure() { configurationSection.value=enabled.value?tab.value:'connection';emit('switch') }
 let timer
 async function refresh() {
@@ -59,6 +64,13 @@ async function generate() {
   catch(e) { error.value=requestErrorMessage(e,'生成任务未启动，请先配置115源文件夹。') }
   finally { busy.value=false }
 }
+async function refreshAddresses() {
+  if(busy.value || running.value || organizeBusy.value)return
+  busy.value=true;error.value=''
+  try { status.value=await post(props.api,'action',{action:'refresh_strm_addresses'}) }
+  catch(e) { error.value=requestErrorMessage(e,'本地STRM播放地址更新未启动，请稍后重试。') }
+  finally { busy.value=false }
+}
 onMounted(()=>{refresh();timer=setInterval(()=>{if(status.value?.state==='RUNNING')refresh()},3000)})
 onUnmounted(()=>clearInterval(timer))
 </script>
@@ -73,12 +85,13 @@ onUnmounted(()=>clearInterval(timer))
   <template v-if="enabled">
     <Storage v-if="tab==='storage'" :api="props.api" :generating="running" @configure="configure"/>
     <section v-if="tab==='strm'" class="p115-section p115-generation">
-      <div class="p115-section-heading"><div class="p115-feature-icon"><v-icon color="primary" size="28">mdi-play-box-multiple-outline</v-icon></div><div class="p115-grow"><h3>生成STRM</h3><p>扫描已配置的媒体库，保留电影、电视剧及其类别。</p></div><v-chip :color="stateColor" size="small" variant="tonal" aria-live="polite">{{labels[status?.state] || '正在读取状态'}}</v-chip></div>
-      <div class="p115-metrics"><div v-for="metric in metrics" :key="metric.label" class="p115-metric"><span>{{metric.label}}</span><strong :class="{'p115-failed':metric.label==='生成失败' && metric.value>0}">{{metric.value}}</strong></div></div>
-      <v-progress-linear v-if="running" indeterminate color="primary" class="mt-5" aria-label="STRM正在生成"/>
-      <div class="p115-actions mt-5"><v-btn color="primary" prepend-icon="mdi-play" :disabled="!loaded || running || organizeBusy || busy" :loading="busy" @click="generate">{{running ? '正在生成STRM' : '生成STRM'}}</v-btn><v-btn variant="text" prepend-icon="mdi-refresh" :loading="refreshing" :disabled="refreshing" @click="refresh">刷新状态</v-btn></div>
-      <p class="p115-note mt-3">{{running ? '任务在后台运行，状态每3秒自动更新，可关闭此页面。' : '首次使用或更改播放地址后，点击生成。STRM输出目录需同时挂载给Emby。'}}</p>
+      <div class="p115-section-heading"><div class="p115-feature-icon"><v-icon color="primary" size="28">mdi-play-box-multiple-outline</v-icon></div><div class="p115-grow"><h3>生成STRM</h3><p>扫描已配置的媒体库，保留电影、电视剧及其类别。</p></div><v-chip :color="stateColor" size="small" variant="tonal" aria-live="polite">{{stateLabel}}</v-chip></div>
+      <div class="p115-metrics"><div v-for="metric in metrics" :key="metric.label" class="p115-metric"><span>{{metric.label}}</span><strong :class="{'p115-failed':(metric.label==='生成失败' || metric.label==='更新失败') && metric.value>0}">{{metric.value}}</strong></div></div>
+      <v-progress-linear v-if="running" indeterminate color="primary" class="mt-5" aria-label="STRM任务运行中"/>
+      <div class="p115-actions mt-5"><v-btn color="primary" prepend-icon="mdi-play" :disabled="!loaded || running || organizeBusy || busy" :loading="busy && !isAddressMode" @click="generate">{{running && !isAddressMode ? '正在生成STRM' : '生成STRM'}}</v-btn><v-btn variant="tonal" color="primary" prepend-icon="mdi-link-variant" :disabled="!loaded || running || organizeBusy || busy" :loading="busy && isAddressMode" @click="refreshAddresses">{{running && isAddressMode ? '正在更新播放地址' : '仅更新播放地址'}}</v-btn><v-btn variant="text" prepend-icon="mdi-refresh" :loading="refreshing" :disabled="refreshing" @click="refresh">刷新状态</v-btn></div>
+      <p class="p115-note mt-3">{{running ? (isAddressMode ? '正在纯本地替换已有STRM播放地址，不扫描115网盘，状态每3秒自动更新。' : '任务在后台运行，状态每3秒自动更新，可关闭此页面。') : '首次使用或新增文件后点击“生成STRM”；仅修改播放地址（如切换公网域名）时，点击“仅更新播放地址”即可本地秒级替换，无需重扫115网盘。'}}</p>
       <v-alert v-if="status?.error" type="warning" variant="tonal" class="mt-4">{{errors[status.error] || '请检查配置后重新生成。'}}</v-alert>
+      <p v-if="status?.skipped" class="p115-note mt-3">已跳过 {{status.skipped}} 个本地不存在的STRM文件。</p>
       <p v-if="status?.relocated" class="p115-note mt-3">已修正 {{status.relocated}} 个旧位置STRM，并移除其空目录。</p>
     </section>
     <section v-if="tab==='organize'" class="p115-section">

@@ -59,6 +59,7 @@ def dispatch(plugin,route,payload):
             return service.telegram.retry(payload['id'])
         if route=='action' and payload=={'action':'telegram_retry_all'}: return service.telegram.retry_all()
         if route=='action' and payload=={'action':'generate'}: return service.start()
+        if route=='action' and payload=={'action':'refresh_strm_addresses'}: return service.start_address_refresh()
         if route=='action' and payload=={'action':'scan_storage'}: return service.storage.start('scan')
         if route=='action' and set(payload)=={'action','link','password'} and payload['action']=='import_share':
             return service.storage.start('import',{'link':payload['link'],'password':payload['password']})

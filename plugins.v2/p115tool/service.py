@@ -117,7 +117,7 @@ class Service:
                 if rerun: self._rerun=True
                 return self.snapshot()
             if not self.config.source_cids and not self.storage.virtual_rows(): raise ValueError('Configure source folders')
-            state = {'state':'RUNNING','found':0,'generated':0,'failed':0,'error':None}
+            state = {'state':'RUNNING','mode':'generate','found':0,'generated':0,'failed':0,'error':None}
             self._save_state(state)
             self._worker=threading.Thread(target=self._generate_pending,name='p115tool-strm',daemon=True)
             try:
@@ -127,6 +127,80 @@ class Service:
                 self._save_state({**state, 'state':'FAILED', 'error':'START_FAILED'})
                 raise ToolError('STRM task did not start') from None
             return self.snapshot()
+
+    def start_address_refresh(self):
+        with self._lock:
+            if self._closed: raise ToolError('Service stopped')
+            if self.storage.busy:
+                raise ToolError('Storage task running')
+            if self._worker and self._worker.is_alive():
+                return self.snapshot()
+            state = {'state':'RUNNING','mode':'refresh_addresses','found':0,'generated':0,'failed':0,'skipped':0,'error':None}
+            self._save_state(state)
+            self._worker=threading.Thread(target=self._refresh_addresses_worker,name='p115tool-strm-address',daemon=True)
+            try:
+                self._worker.start()
+            except RuntimeError:
+                self._worker = None
+                self._save_state({**state, 'state':'FAILED', 'error':'START_FAILED'})
+                raise ToolError('STRM task did not start') from None
+            return self.snapshot()
+
+    def _refresh_addresses_worker(self):
+        self.refresh_addresses()
+        with self._lock:
+            if self._closed or not self._rerun:
+                self._worker=None
+                self.storage.drain_pending()
+                return
+            self._rerun=False
+        self._generate_pending()
+
+    def refresh_addresses(self):
+        state={'state':'RUNNING','mode':'refresh_addresses','found':0,'generated':0,'failed':0,'skipped':0,'error':None}
+        self._save_state(state)
+        last_progress=time.monotonic()
+        def save_progress():
+            nonlocal last_progress
+            now=time.monotonic()
+            if now-last_progress>=1:
+                self._save_state(state)
+                last_progress=now
+        try:
+            rows=self.query(
+                "SELECT f.file_id, f.token, f.relative_path, f.strm_path FROM strm_files f "
+                "WHERE f.strm_path IS NOT NULL AND f.strm_path != '' "
+                "AND NOT EXISTS (SELECT 1 FROM virtual_editions e WHERE e.media_id=f.file_id AND e.stable_id!=e.media_id) "
+                "AND NOT EXISTS (SELECT 1 FROM removed_storage_records r WHERE r.media_id=f.file_id)"
+            )
+            for row in rows:
+                if self._stop.is_set(): raise InterruptedError()
+                state['found']+=1
+                try:
+                    target=Path(row['strm_path'])
+                    if target.is_symlink():
+                        raise SafetyError('Unsafe output target')
+                    resolved=target.resolve()
+                    if not resolved.is_relative_to(self.strm.root) or resolved.suffix.lower()!='.strm':
+                        raise SafetyError('Unsafe output target')
+                    if not resolved.is_file():
+                        state['skipped']+=1
+                        save_progress()
+                        continue
+                    rel=resolved.relative_to(self.strm.root).as_posix()[:-5]
+                    self.write_output(row['file_id'], rel, row['token'])
+                    state['generated']+=1
+                except Exception as exc:
+                    state['failed']+=1
+                    state['error']='OUTPUT_CONFLICT' if isinstance(exc,SafetyError) else 'FILE_GENERATION_FAILED'
+                save_progress()
+            state['state']='DONE' if not state['failed'] else 'PARTIAL'
+        except InterruptedError:
+            state['state']='INTERRUPTED'
+        except Exception:
+            state['state']='FAILED'
+            state['error']='ADDRESS_REFRESH_FAILED'
+        self._save_state(state)
 
     def request_auto_generate(self):
         with self._lock:
@@ -157,7 +231,7 @@ class Service:
                 self._rerun=False
 
     def generate_all(self):
-        state={'state':'RUNNING','found':0,'generated':0,'failed':0,'error':None}
+        state={'state':'RUNNING','mode':'generate','found':0,'generated':0,'failed':0,'error':None}
         self._save_state(state)
         last_progress=time.monotonic()
         def save_progress():
