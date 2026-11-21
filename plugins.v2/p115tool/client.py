@@ -6,6 +6,11 @@ import time
 from urllib.parse import parse_qsl, urlsplit
 from .cookie_renewal import CookieRenewal, cookie_identity
 from .models import RemoteFile, DownloadLink, RemoteError, MissingFile, SafetyError, ShareRejected
+try:
+    from app.log import logger
+except ModuleNotFoundError:
+    import logging
+    logger = logging.getLogger('p115tool.client')
 
 PICKCODE_RE = re.compile(r'[A-Za-z0-9]+')
 
@@ -15,6 +20,13 @@ OPEN_READ_METHODS = {
     'download_url': 'download_url_info',
 }
 COOKIE_RETRY_READS = frozenset(OPEN_READ_METHODS) | {'share_snap', 'share_download_url', 'recyclebin_list'}
+TRANSIENT_RETRY_READS = frozenset(OPEN_READ_METHODS)
+TRANSIENT_SDK_ERRORS = frozenset({
+    'TimeoutError', 'ReadTimeout', 'ConnectTimeout', 'WriteTimeout', 'PoolTimeout',
+    'ConnectError', 'ConnectionError', 'ConnectionResetError', 'ConnectionAbortedError',
+    'BrokenPipeError', 'RemoteProtocolError', 'ProtocolError', 'SSLError', 'OSError',
+    'ReadError', 'HTTPError', 'IncompleteRead',
+})
 COOKIE_RENEWAL_COOLDOWN = 1800
 QR_PRIMARY = ('qandroid', 'M1')
 QR_BACKUP = ('alipaymini', 'R2')
@@ -181,21 +193,26 @@ class P115ClientManager:
             backup = ''
         return cookie, backup
 
-    def _check_cookie_locked(self):
+    def _check_cookie_locked(self, *, on_auth_reject=False):
         if self._closed or self.config.use_moviepilot_auth or not self.config.cookie_auto_refresh:
             return False
         renewal = self._cookie_renewal
         now = time.monotonic()
-        if now < renewal.next_check:
+        # If the previous check saw VALID and a live request just received 99/990001,
+        # re-verify immediately instead of failing for up to 60s on a stale VALID cache.
+        if now < renewal.next_check and not (on_auth_reject and renewal.state == 'VALID'):
             return False
         renewal.next_check = now + 60
         try:
             active = self._login_status(self._client())
         except Exception:
             renewal.state = 'STATUS_UNAVAILABLE'
+            logger.warning('115 Cookie 检查失败：状态=STATUS_UNAVAILABLE')
             return False
         if active is not False:
             renewal.state = 'VALID' if active is True else 'STATUS_UNAVAILABLE'
+            if renewal.state != 'VALID':
+                logger.warning('115 Cookie 检查结果异常：状态=STATUS_UNAVAILABLE')
             return False
 
         primary = cookie_identity(self.config.cookie)
@@ -203,42 +220,51 @@ class P115ClientManager:
         from p115client.const import SSOENT_TO_APP
         if not primary or not backup or primary[0] != backup[0] or primary[1] == backup[1]:
             renewal.state = 'INVALID_PAIR'
+            logger.warning('115 Cookie 自动续登跳过：状态=INVALID_PAIR，请重新配置同账号不同设备的主备 Cookie')
             return False
         device = SSOENT_TO_APP.get(primary[1])
         if not device:
             renewal.state = 'INVALID_PAIR'
+            logger.warning('115 Cookie 自动续登跳过：状态=INVALID_PAIR，不支持的主设备类型')
             return False
         attempted_at = int(time.time())
         if attempted_at < renewal.record['attempt_at'] + COOKIE_RENEWAL_COOLDOWN:
             if renewal.state not in ('RENEWAL_FAILED', 'PERSISTENCE_FAILED'):
                 renewal.state = 'COOLDOWN'
+            logger.warning(f'115 Cookie 主会话已失效，续登冷却中：状态={renewal.state}')
             return False
         try:
             seed = self._new_cookie_client(self.config.cookie_renewal_seed)
             if self._login_status(seed) is not True:
                 renewal.state = 'BACKUP_EXPIRED'
+                logger.warning('115 Cookie 自动续登失败：状态=BACKUP_EXPIRED，备用会话也已失效，请重新扫码')
                 return False
         except Exception:
             renewal.state = 'STATUS_UNAVAILABLE'
+            logger.warning('115 Cookie 备用会话检查失败：状态=STATUS_UNAVAILABLE')
             return False
         try:
             renewal.save(attempt_at=attempted_at)
         except OSError:
             renewal.state = 'PERSISTENCE_FAILED'
+            logger.warning('115 Cookie 自动续登中止：状态=PERSISTENCE_FAILED')
             return False
         try:
             result = seed.login_with_app(device, timeout=10, follow_redirects=False)
             updated, cookie, _ = self._verify_issued_cookie(result, primary[1], primary[0])
         except Exception:
             renewal.state = 'RENEWAL_FAILED'
+            logger.warning('115 Cookie 自动续登失败：状态=RENEWAL_FAILED')
             return False
         try:
             renewal.save(cookie=cookie, renewed_at=int(time.time()))
         except OSError:
             renewal.state = 'PERSISTENCE_FAILED'
+            logger.warning('115 Cookie 自动续登保存失败：状态=PERSISTENCE_FAILED')
             return False
         self._sdk = updated
         renewal.state = 'RENEWED'
+        logger.info('115 Cookie 主会话自动续登成功：状态=RENEWED')
         return True
 
     def _call_moviepilot(self, method, args, kwargs):
@@ -269,8 +295,15 @@ class P115ClientManager:
             try:
                 return self._call_once(method, args, kwargs)
             except RemoteError as exc:
-                if (method in COOKIE_RETRY_READS and getattr(exc, 'upstream_code', None) in (99, 990001)
-                        and self._check_cookie_locked()):
+                code = getattr(exc, 'upstream_code', None)
+                sdk_error = getattr(exc, 'sdk_error', None)
+                if (method in COOKIE_RETRY_READS and code in (99, 990001)
+                        and self._check_cookie_locked(on_auth_reject=True)):
+                    return self._call_once(method, args, kwargs)
+                if (method in TRANSIENT_RETRY_READS and not isinstance(exc, MissingFile)
+                        and code is None and sdk_error in TRANSIENT_SDK_ERRORS and not self._closed):
+                    logger.info(f'115只读请求遇网络抖动，重试一次：接口={method}，SDK异常={sdk_error}')
+                    time.sleep(0.3)
                     return self._call_once(method, args, kwargs)
                 raise
 

@@ -653,7 +653,7 @@ class StorageManager:
     def virtualize(self, media_id, purge_source=False, progress=None):
         progress=progress or (lambda phase:None)
         purge_source=self.config.recycle_purge or purge_source
-        with self._gate:
+        with self._gate.for_media(media_id):
             if self.service._stop.is_set(): raise InterruptedError()
             if purge_source and not re.fullmatch(r'[0-9]{6}',self.config.recycle_password):
                 raise SafetyError('Recycle security key required')

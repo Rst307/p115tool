@@ -153,3 +153,35 @@ class CookieRenewalTests(unittest.TestCase):
         plugin.run_cookie_check()
         self.assertEqual(plugin.get_service(), [])
         self.transport.assert_not_called()
+
+    def test_auth_rejection_after_recent_valid_check_renews_immediately(self):
+        self.primary_active = True
+        self.manager.check_cookie()
+        self.assertEqual(self.manager.cookie_status()['state'], 'VALID')
+        self.primary_active = False
+        self.assertTrue(self.manager.call('fs_files', {'cid': '0'})['state'])
+        self.assertEqual(self.manager.cookie_status()['state'], 'RENEWED')
+
+    def test_transient_transport_error_retries_read_once_but_never_retries_write(self):
+        self.primary_active = True
+        attempts = {'fs_files': 0, 'share_receive': 0}
+
+        class FlakySDK:
+            def fs_files(sdk, *args, **kwargs):
+                attempts['fs_files'] += 1
+                if attempts['fs_files'] == 1:
+                    raise ConnectionResetError('transient reset')
+                return {'state': True, 'data': []}
+
+            def share_receive(sdk, *args, **kwargs):
+                attempts['share_receive'] += 1
+                raise ConnectionResetError('transient reset')
+
+        flaky = P115ClientManager(self.config, sdk=FlakySDK())
+        self.addCleanup(flaky.close)
+        with patch('p115tool.client.time.sleep'):
+            self.assertTrue(flaky.call('fs_files', {'cid': '0'})['state'])
+            self.assertEqual(attempts['fs_files'], 2)
+            with self.assertRaises(RemoteError):
+                flaky.call('share_receive', {'share_code': 'fixture', 'file_id': '7', 'cid': '9'})
+            self.assertEqual(attempts['share_receive'], 1)

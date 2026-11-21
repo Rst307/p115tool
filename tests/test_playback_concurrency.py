@@ -95,6 +95,20 @@ class PlaybackEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await get).status_code, 302)
             log.assert_called_once()
 
+    async def test_stale_singleflight_task_does_not_trap_new_requests(self):
+        with patch('p115tool.api.SINGLEFLIGHT_MAX_AGE', 0.01):
+            get = asyncio.create_task(self.client.get('/play/' + TOKEN, headers={'User-Agent': 'Emby fixture'}))
+            try:
+                await asyncio.wait_for(self.resolving.wait(), 2)
+                await asyncio.sleep(0.02)
+                head = asyncio.create_task(self.client.head('/play/' + TOKEN, headers={'User-Agent': 'Emby fixture'}))
+                await asyncio.wait_for(self.head_entered.wait(), 2)
+            finally:
+                self.release.set()
+            responses = await asyncio.gather(get, head)
+        self.assertEqual([r.status_code for r in responses], [302, 302])
+        self.assertEqual(len(self.calls), 2)
+
 
 class ActualPlaybackTests(unittest.TestCase):
     def setUp(self):

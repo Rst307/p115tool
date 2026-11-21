@@ -1,6 +1,21 @@
 # 当前插件范围与验证
 
-更新时间：2026-11-21（Asia/Shanghai），版本0.2.57。
+更新时间：2026-11-21（Asia/Shanghai），版本0.2.58。
+
+## 0.2.58 Cookie 续登与 302 播放稳定性加固
+
+针对 Cookie 掉线恢复慢/缺少日志与后台任务或网络抖动导致播放中断的问题进行全面加固：
+
+- **Cookie 即时续登与可观测性**（`p115tool/client.py`）：
+  - 当定时巡检刚确认 `VALID` 后 60 秒内遇到真实 `99`/`990001` 会话拒绝时，不再被 60 秒 `next_check` 缓存挡住，立即复核并触发同账号备用会话续登（仍严格保留 30 分钟跨重启续登冷却与写请求不重放）。
+  - 为 `RENEWED`、`BACKUP_EXPIRED`、`INVALID_PAIR`、`COOLDOWN`、`RENEWAL_FAILED`、`PERSISTENCE_FAILED`、`STATUS_UNAVAILABLE` 补充脱敏状态日志，绝不输出 Cookie 或凭据。
+- **只读接口网络抖动自动恢复**（`p115tool/client.py`）：
+  - 对幂等只读接口（`fs_file`、`fs_files`、`download_url`）在遇到无业务错误码的纯传输层异常（连接重置、超时、断流等）时短暂退避 0.3 秒后最多重试一次；写操作与业务错误码绝不重放。
+- **消除播放全局锁阻塞与陈旧单飞拖死**（`p115tool/quality.py`、`p115tool/storage.py`、`p115tool/api.py`）：
+  - `VirtualUpgrades.consider` 在执行远端 `probe_share_member`（分享取链与单字节测流）期间释放全局门锁，完成后重新加锁并复核状态再以复用连接事务提交；`StorageManager.virtualize` 改为按资源分段锁 `for_media(media_id)`。
+  - `api.py` 单飞复用增加 `SINGLEFLIGHT_MAX_AGE = 60` 秒上限，避免极端情况下单个在途任务卡死拖累后续新播放请求。
+
+验证：新增 3 项稳定性回归测试（即时续登、只读传输抖动重试且写不重放、单飞超时保护）；Cookie 续登、播放并发、画质升级、原生授权、稳定性与原生打包共 66 项定向回归全部通过，未运行真实媒体联调。
 
 ## 0.2.57 修复临时副本清理阻塞虚拟播放并补充等锁诊断
 

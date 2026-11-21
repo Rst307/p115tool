@@ -140,10 +140,28 @@ class VirtualUpgrades:
             # rereading an entire season for every episode being upgraded.
             if members.get((file.name,file.size,file.sha1)) != [file.file_id]:
                 raise SafetyError('Upgrade source identity changed')
-            self.storage.probe_share_member(candidate, file.file_id)
+
+        # Release the global storage gate during remote share/CDN probing so virtual playback is never blocked.
+        self.storage.probe_share_member(candidate, file.file_id)
+
+        with self.storage._gate:
             if self.service._stop.is_set(): raise InterruptedError()
+            recorded = self.service.query('SELECT * FROM virtual_editions WHERE media_id=?', (media_id,), one=True)
+            if recorded and recorded['stable_id'] != media_id:
+                self.service.query('UPDATE resource_storage SET password=? WHERE media_id=?', (password,media_id))
+                return 'skipped'
+            selection = self.service.query('SELECT * FROM virtual_selections WHERE stable_id=?', (owner['media_id'],), one=True)
+            selected = selection['selected_id'] if selection else owner['media_id']
+            current = self.service.query('SELECT * FROM virtual_editions WHERE media_id=?', (selected,), one=True)
+            if not current or not better(rank, json.loads(current['quality'])): return 'skipped'
+            stable = self.storage.row(owner['media_id'])
             self.owned_output(stable)
-            with self.service._lock, closing(sqlite3.connect(self.service.path)) as db, db:
+            if self.service.query("SELECT media_id FROM resource_copies WHERE media_id IN (?,?) "
+                    "AND stage NOT IN ('READY','EMPTY')", (owner['media_id'], selected), one=True):
+                raise SafetyError('Upgrade blocked by copy checkpoint')
+            if self.storage.row(media_id):
+                raise SafetyError('Upgrade candidate already registered')
+            with self.service.transaction() as db:
                 db.execute('INSERT INTO strm_files VALUES(?,?,?,?,?,?,?,?,NULL)',
                     (media_id, secrets.token_urlsafe(32), '', file.name, file.size, file.sha1, '0', str(destination)))
                 db.execute("INSERT INTO resource_storage(media_id,kind,stage,share_code,password,share_fid) "

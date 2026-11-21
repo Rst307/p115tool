@@ -114,6 +114,7 @@ def log_failure(exc,context='playback'):
     logger.warning(f'{label}：接口={operation}，类型={type(exc).__name__}，SDK异常={sdk_error}，上游错误码={code}，原因={reason}，副本状态={copy_state}{_bug_location(exc)}')
 
 PLAYBACK_SLOW_SECONDS = 10
+SINGLEFLIGHT_MAX_AGE = 60
 
 
 async def resolve_playback(service, token, ua, rid='-'):
@@ -163,13 +164,20 @@ def routes(plugin):
         if getattr(service, '_closed', False):
             log_failure(ToolError('Service stopped'))
             raise HTTPException(503, 'Playback unavailable')
-        key = (asyncio.get_running_loop(), id(service), token, ua)
+        loop = asyncio.get_running_loop()
+        key = (loop, id(service), token, ua)
         task = pending.get(key)
-        if task is None or task.done():
+        stale = (task is not None and not task.done()
+                 and loop.time() - getattr(task, '_p115_started', loop.time()) >= SINGLEFLIGHT_MAX_AGE)
+        if stale:
+            old_rid = getattr(task, '_p115_rid', '-')
+            logger.warning(f'115播放[{old_rid}] 在途解析已超过 {SINGLEFLIGHT_MAX_AGE} 秒，新请求不再复用该任务')
+        if task is None or task.done() or stale:
             rid = secrets.token_hex(4)
             logger.info(f'115播放[{rid}] 开始解析：方法={method}，UA长度={len(ua)}')
             task = asyncio.create_task(resolve_playback(service, token, ua, rid=rid))
             task._p115_rid = rid
+            task._p115_started = loop.time()
             pending[key] = task
             task.add_done_callback(partial(forget, key))
         else:
