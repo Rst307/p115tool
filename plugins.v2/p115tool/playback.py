@@ -4,9 +4,19 @@ import threading
 import time
 import uuid
 from .models import MissingFile, RemoteError, SafetyError, ToolError
+try:
+    from app.log import logger
+except ModuleNotFoundError:
+    import logging
+    logger = logging.getLogger('p115tool.playback')
 
 PLAYBACK_GUARD = 24 * 3600
 RECEIVE_RECOVERY_COOLDOWN = 30
+
+
+def _err_code(exc):
+    code = getattr(exc, 'upstream_code', None)
+    return code if type(code) is int else None
 
 
 def matches_copy(file, row, parent=None):
@@ -160,12 +170,14 @@ class PlaybackManager:
                 "folder_cid='',file_id='',received_at=0,lease_until=0,stage='FOLDER_CREATING'",
                 (media_id, root, name),
             )
+        started = time.monotonic()
         try:
             cid = self.client.create_temp_directory(root, name)
         except Exception:
             self.service.query("UPDATE resource_copies SET stage='FOLDER_UNKNOWN' WHERE media_id=?", (media_id,))
             raise ToolError('Temporary directory outcome unknown') from None
         self.service.query("UPDATE resource_copies SET folder_cid=?,stage='EMPTY' WHERE media_id=?", (cid, media_id))
+        logger.info(f'115播放流程：媒体={media_id}，步骤=创建临时目录完成，耗时={(time.monotonic() - started) * 1000:.1f}ms')
         return {
             'media_id': media_id, 'root_cid': root, 'folder_name': name,
             'folder_cid': cid, 'file_id': '', 'stage': 'EMPTY',
@@ -219,6 +231,7 @@ class PlaybackManager:
                         raise SafetyError('Temporary contents changed')
                 if self.service._stop.is_set():
                     raise InterruptedError()
+                logger.info(f'115播放流程：媒体={media_id}，步骤=待确认副本目录为空，归档后重建目录，原状态={copy["stage"]}')
                 new_copy = self.create_copy_folder(media_id, copy['root_cid'], abandoned=copy)
                 return None, new_copy
             if len(files) != 1:
@@ -235,6 +248,7 @@ class PlaybackManager:
                 "UPDATE resource_copies SET file_id=?,stage='READY',received_at=? WHERE media_id=?",
                 (actual.file_id, time.time(), media_id),
             )
+            logger.info(f'115播放流程：媒体={media_id}，步骤=副本核实就绪，原状态={copy["stage"]}')
             return actual, None
         except Exception as exc:
             if self.service._stop.is_set():
@@ -270,6 +284,7 @@ class PlaybackManager:
             if not row or not row['share_fid']:
                 raise SafetyError('Share mapping unavailable')
             copy = self.storage.copy(media_id)
+            logger.info(f'115播放流程：媒体={media_id}，步骤=检查临时副本，副本状态={copy["stage"] if copy else "NONE"}')
             fresh_folder = False
             fresh_receive = False
 
@@ -290,16 +305,19 @@ class PlaybackManager:
                     continue
 
                 if copy and copy['stage'] == 'READY':
+                    started = time.monotonic()
                     try:
                         self.validate_folder(copy)
                     except MissingFile:
                         self._verify_missing_ready_copy(copy, row)
+                        logger.info(f'115播放流程：媒体={media_id}，步骤=已有副本目录丢失，准备重建转存')
                         copy = self.create_copy_folder(media_id, copy['root_cid'])
                         fresh_folder = True
                         continue
                     contents = list(self.client.list_files(copy['folder_cid']))
                     if not contents:
                         self._verify_missing_ready_copy(copy, row)
+                        logger.info(f'115播放流程：媒体={media_id}，步骤=已有副本文件缺失，准备重新转存')
                         self.service.query(
                             "UPDATE resource_copies SET stage='EMPTY',file_id='',received_at=0,lease_until=0 WHERE media_id=?",
                             (media_id,),
@@ -310,7 +328,10 @@ class PlaybackManager:
                     members = [f for f in contents if f.file_id == copy['file_id']]
                     if len(members) != 1 or not matches_copy(members[0], row, copy['folder_cid']):
                         raise SafetyError('Temporary contents changed')
-                    return self._resolve_candidate_detail(members[0], row, copy['folder_cid'], require_stat=False)
+                    needs_stat = not members[0].pickcode or (bool(row['sha1']) and not members[0].sha1)
+                    actual = self._resolve_candidate_detail(members[0], row, copy['folder_cid'], require_stat=False)
+                    logger.info(f'115播放流程：媒体={media_id}，步骤=复用已有副本，额外stat={needs_stat}，耗时={(time.monotonic() - started) * 1000:.1f}ms')
+                    return actual
 
                 if copy and copy['stage'] in ('FOLDER_UNKNOWN', 'DELETE_UNKNOWN', 'FOLDER_CREATING', 'RECEIVING', 'DELETING'):
                     error = SafetyError('Temporary write outcome unresolved')
@@ -340,6 +361,7 @@ class PlaybackManager:
                     raise InterruptedError()
 
                 self.service.query("UPDATE resource_copies SET stage='RECEIVING' WHERE media_id=?", (media_id,))
+                recv_started = time.monotonic()
                 try:
                     self.client.receive_to_temp(row['share_code'], row['password'], row['share_fid'], copy['folder_cid'])
                 except Exception as exc:
@@ -348,6 +370,7 @@ class PlaybackManager:
                     error.copy_state = 'RECEIVE_UNKNOWN'
                     _copy_error_attrs(error, exc)
                     raise error from None
+                logger.info(f'115播放流程：媒体={media_id}，步骤=分享转存完成，耗时={(time.monotonic() - recv_started) * 1000:.1f}ms')
 
                 now = time.time()
                 self.service.query("UPDATE resource_copies SET stage='RECEIVED',received_at=? WHERE media_id=?", (now, media_id))
@@ -367,6 +390,7 @@ class PlaybackManager:
                 if self.service._stop.is_set():
                     raise InterruptedError()
                 copy = self.storage.copy(version_id)
+                logger.info(f'115播放流程：媒体={version_id}，步骤=原生模式核实副本，副本状态={copy["stage"] if copy else "NONE"}')
                 if not copy:
                     continue
                 unavailable.copy_state = copy['stage']
@@ -383,8 +407,10 @@ class PlaybackManager:
                     self.validate_folder(copy)
                     files = list(self.client.list_files(copy['folder_cid']))
                 except MissingFile:
+                    logger.info(f'115播放流程：媒体={version_id}，步骤=原生模式跳过副本，原因=目录缺失')
                     continue
                 if not files:
+                    logger.info(f'115播放流程：媒体={version_id}，步骤=原生模式跳过副本，原因=目录为空')
                     continue
                 if len(files) != 1:
                     raise SafetyError('Temporary contents not uniquely verified')
@@ -395,12 +421,16 @@ class PlaybackManager:
                 try:
                     actual = self._resolve_candidate_detail(candidate, row, copy['folder_cid'], require_stat=False)
                 except MissingFile:
+                    logger.info(f'115播放流程：媒体={version_id}，步骤=原生模式跳过副本，原因=文件详情缺失')
                     continue
+                link_started = time.monotonic()
                 try:
                     link = self.client.normal_link(actual.pickcode, ua, file_id=actual.file_id)
                 except MissingFile:
+                    logger.info(f'115播放流程：媒体={version_id}，步骤=原生模式跳过副本，原因=取链文件缺失')
                     continue
                 self.extend_lease(version_id)
+                logger.info(f'115播放流程：媒体={version_id}，步骤=原生模式副本取链成功，耗时={(time.monotonic() - link_started) * 1000:.1f}ms')
                 return link.url
             raise unavailable
 
@@ -432,9 +462,13 @@ class PlaybackManager:
 
     def _fetch_cookie_link(self, media_id, actual, ua):
         # The storage gate is already released; lease_until protects the copy during link lookup.
+        started = time.monotonic()
         try:
-            return self.client.normal_link(actual.pickcode, ua).url
+            url = self.client.normal_link(actual.pickcode, ua).url
+            logger.info(f'115播放流程：媒体={media_id}，步骤=副本取链成功，耗时={(time.monotonic() - started) * 1000:.1f}ms')
+            return url
         except RemoteError as exc:
+            logger.info(f'115播放流程：媒体={media_id}，步骤=副本取链失败触发复核恢复，类型={type(exc).__name__}，上游错误码={_err_code(exc)}')
             # A copy may disappear between validation and link lookup. Recheck
             # live membership before one bounded recovery attempt.
             with self.storage._gate.for_media(media_id):
@@ -444,36 +478,54 @@ class PlaybackManager:
                         raise SafetyError('Playback link unavailable for existing copy') from None
                     raise
                 self.extend_lease(media_id)
-            return self.client.normal_link(restored.pickcode, ua).url
+            retry_started = time.monotonic()
+            url = self.client.normal_link(restored.pickcode, ua).url
+            logger.info(f'115播放流程：媒体={media_id}，步骤=恢复后副本取链成功，耗时={(time.monotonic() - retry_started) * 1000:.1f}ms')
+            return url
 
     def play(self, media_id, ua, target=None):
         if self.service._stop.is_set():
             raise ToolError('Service stopped')
         native = self.config.use_moviepilot_auth
+        mode = 'native' if native else 'cookie'
         link_args = {'file_id': media_id} if native else {}
         pickcode = (self._direct_from_row(target, respect_selection=not native)
                     if target is not None else self.direct_pickcode(media_id, respect_selection=not native))
+        kind = target['kind'] if target is not None else 'UNKNOWN'
+        stage = target['stage'] if target is not None else 'UNKNOWN'
+        logger.info(f'115播放流程：媒体={media_id}，模式={mode}，类型={kind or "NONE"}，存储状态={stage or "NONE"}，直链快速路径={pickcode is not None}')
         if pickcode is not None:
             # Actual files can get a link while another resource is transferring.
             # Recheck before returning in case conversion crossed its delete checkpoint.
+            started = time.monotonic()
             try:
                 location = self.client.normal_link(pickcode, ua, **link_args).url
-            except RemoteError:
+            except RemoteError as exc:
+                logger.info(f'115播放流程：媒体={media_id}，步骤=实际源取链失败，类型={type(exc).__name__}，上游错误码={_err_code(exc)}')
                 if self.direct_pickcode(media_id, respect_selection=not native) == pickcode:
                     raise
+                logger.info(f'115播放流程：媒体={media_id}，步骤=实际源状态变更，转入虚拟副本流程')
             else:
                 if self.direct_pickcode(media_id, respect_selection=not native) == pickcode:
+                    logger.info(f'115播放流程：媒体={media_id}，步骤=实际源取链成功，耗时={(time.monotonic() - started) * 1000:.1f}ms')
                     return location
+                logger.info(f'115播放流程：媒体={media_id}，步骤=实际源取链后状态变更，转入虚拟副本流程')
 
         with self.storage._gate.for_media(media_id):
             if self.service._stop.is_set():
                 raise ToolError('Service stopped')
             if not native:
-                media_id = self.storage.upgrades.playback_source(media_id)
+                resolved = self.storage.upgrades.playback_source(media_id)
+                if resolved != media_id:
+                    logger.info(f'115播放流程：媒体={media_id}，步骤=画质选源，目标={resolved}')
+                    media_id = resolved
             pickcode = self.direct_pickcode(media_id, respect_selection=False)
             if pickcode is not None:
                 direct_args = {'file_id': media_id} if native else {}
-                return self.client.normal_link(pickcode, ua, **direct_args).url
+                started = time.monotonic()
+                url = self.client.normal_link(pickcode, ua, **direct_args).url
+                logger.info(f'115播放流程：媒体={media_id}，步骤=锁内实际源取链成功，耗时={(time.monotonic() - started) * 1000:.1f}ms')
+                return url
             if native:
                 return self.play_moviepilot_copy(media_id, ua)
             actual = self.storage.ensure_copy(media_id)

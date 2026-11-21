@@ -1,6 +1,16 @@
 # 当前插件范围与验证
 
-更新时间：2026-11-21（Asia/Shanghai），版本0.2.55。
+更新时间：2026-11-21（Asia/Shanghai），版本0.2.56。
+
+## 0.2.56 增加 302 播放脱敏诊断日志
+
+在 `p115tool/api.py` 与 `p115tool/playback.py` 新增全链路脱敏 `INFO`/`WARNING` 诊断日志，便于快速定位无法播放的原因（播放器请求问题、115 上游/授权问题或插件代码异常），严格不输出 Cookie、分享密码、播放 token、pickcode、直链或原始异常文本：
+
+- 请求入口与退出：为每次播放解析分配 8 位随机短追踪编号（与 token 无关），记录请求方法、UA 长度、是否复用在途解析、最终 HTTP 状态与总耗时；token/UA 校验拒绝时输出固定原因。
+- 播放步骤追踪：记录媒体 ID、授权模式（`native`/`cookie`）、存储类型与状态、是否走直链快速路径、画质选源切换、临时副本状态、目录创建/分享转存/副本复用与取链各步骤耗时，以及触发副本恢复时的错误类型与数字上游错误码。
+- 失败原因增强：`SAFETY_REASONS` 补全 `COOKIE_NOT_CONFIGURED`、`REMOTE_FILE_MISSING`、`PLAYBACK_LINK_UNAVAILABLE`、`UPSTREAM_REQUEST_FAILED`、`SDK_REQUEST_FAILED`、`TEMP_FOLDER_UNKNOWN` 等固定原因码；非预期 Python 异常（非 `ToolError`）在失败日志末尾附加 `位置=<文件名>:<行号>`。
+
+验证：新增 2 项日志脱敏与异常定位测试；播放并发、播放恢复、原生授权、稳定性与原生打包共 46 项定向回归全部通过，未运行真实媒体联调。
 
 ## 0.2.55 重构 302 观看模块
 

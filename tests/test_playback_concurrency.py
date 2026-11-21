@@ -303,3 +303,24 @@ class VirtualPlaybackEfficiencyTests(unittest.TestCase):
         worker.join(4)
         self.assertTrue(done.is_set())
         self.assertEqual(result, [LINK + '/pc-a'])
+
+    def test_playback_step_logs_emit_sanitized_trace_without_secrets(self):
+        with self.assertLogs('p115tool.playback', level='INFO') as logs:
+            self.assertEqual(self.service.play(self.token_a, 'Emby fixture'), LINK + '/pc-a')
+        joined = '\n'.join(logs.output)
+        self.assertIn('媒体=v_a', joined)
+        self.assertIn('复用已有副本', joined)
+        self.assertIn('副本取链成功', joined)
+        for secret in (self.token_a, 'pc-a', LINK, 'abcd'):
+            self.assertNotIn(secret, joined)
+
+    def test_unexpected_bug_logs_file_and_line_without_exception_text(self):
+        from p115tool.api import log_failure
+        try:
+            raise KeyError('SECRET_TOKEN_OR_URL')
+        except KeyError as exc:
+            with self.assertLogs('p115tool.api', level='WARNING') as logs:
+                log_failure(exc)
+        self.assertIn('类型=KeyError', logs.output[0])
+        self.assertIn('位置=test_playback_concurrency.py:', logs.output[0])
+        self.assertNotIn('SECRET_TOKEN_OR_URL', logs.output[0])

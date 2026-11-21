@@ -1,6 +1,7 @@
 import asyncio
 from functools import partial
 import re
+import secrets
 
 from fastapi import Request, HTTPException
 from starlette.concurrency import run_in_threadpool
@@ -43,9 +44,19 @@ SAFETY_REASONS={
     'Temporary directory not empty':'TEMP_FOLDER_NOT_EMPTY',
     'Temporary directory not configured':'TEMP_ROOT_NOT_CONFIGURED',
     'Invalid temporary root':'TEMP_ROOT_INVALID',
+    'Temporary directory outcome unknown':'TEMP_FOLDER_UNKNOWN',
+    'Missing temporary directory identity':'TEMP_FOLDER_ID_MISSING',
     'Share mapping unavailable':'SHARE_MAPPING_UNAVAILABLE',
     'Owned share file changed':'OWNED_SHARE_CHANGED',
     'Playback link unavailable for existing copy':'EXISTING_COPY_LINK_UNAVAILABLE',
+    '115 cookie is not configured':'COOKIE_NOT_CONFIGURED',
+    '115 client is stopped':'CLIENT_STOPPED',
+    '115 playback link unavailable':'PLAYBACK_LINK_UNAVAILABLE',
+    'Remote file no longer exists':'REMOTE_FILE_MISSING',
+    'Remote file not found':'REMOTE_FILE_MISSING',
+    '115 request failed or returned an unrecognized response':'UPSTREAM_REQUEST_FAILED',
+    '115 SDK request failed':'SDK_REQUEST_FAILED',
+    'Install p115client in the MoviePilot environment':'SDK_NOT_INSTALLED',
     '115 directory identity mismatch':'DIRECTORY_IDENTITY_MISMATCH',
     '115 returned another directory; scan aborted':'DIRECTORY_FALLBACK',
     'Invalid directory ancestors':'DIRECTORY_ANCESTORS_INVALID',
@@ -72,6 +83,21 @@ SDK_ERROR_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,80}')
 TOKEN_RE = re.compile(r'[A-Za-z0-9_-]{20,128}')
 
 
+FILENAME_RE = re.compile(r'[A-Za-z0-9_.-]{1,64}')
+
+
+def _bug_location(exc):
+    if isinstance(exc, ToolError) or exc.__traceback__ is None:
+        return ''
+    tb = exc.__traceback__
+    while tb.tb_next is not None:
+        tb = tb.tb_next
+    filename = tb.tb_frame.f_code.co_filename.replace('\\', '/').rsplit('/', 1)[-1]
+    if FILENAME_RE.fullmatch(filename):
+        return f'，位置={filename}:{tb.tb_lineno}'
+    return ''
+
+
 def log_failure(exc,context='playback'):
     code=getattr(exc,'upstream_code',None)
     code=code if type(code) is int else None
@@ -85,12 +111,12 @@ def log_failure(exc,context='playback'):
     copy_state=copy_state if type(copy_state) is str and copy_state in COPY_STATES else 'none'
     # Never log the request, token, URL, or exception text/upstream payload.
     label='115回收站处理失败' if context=='recycle' else '115播放失败'
-    logger.warning(f'{label}：接口={operation}，类型={type(exc).__name__}，SDK异常={sdk_error}，上游错误码={code}，原因={reason}，副本状态={copy_state}')
+    logger.warning(f'{label}：接口={operation}，类型={type(exc).__name__}，SDK异常={sdk_error}，上游错误码={code}，原因={reason}，副本状态={copy_state}{_bug_location(exc)}')
 
 PLAYBACK_SLOW_SECONDS = 10
 
 
-async def resolve_playback(service, token, ua):
+async def resolve_playback(service, token, ua, rid='-'):
     loop = asyncio.get_running_loop()
     started = loop.time()
     slow = loop.call_later(PLAYBACK_SLOW_SECONDS, logger.warning,
@@ -107,7 +133,9 @@ async def resolve_playback(service, token, ua):
         status = 503
     finally:
         slow.cancel()
-    return status, location, (loop.time() - started) * 1000
+    elapsed = (loop.time() - started) * 1000
+    logger.info(f'115播放[{rid}] 解析结束：状态={status}，耗时={elapsed:.1f}ms')
+    return status, location, elapsed
 
 
 def routes(plugin):
@@ -118,10 +146,15 @@ def routes(plugin):
             pending.pop(key)
 
     async def play(request: Request):
+        method = request.method if request.method in ('GET', 'HEAD') else 'OTHER'
         token=request.path_params.get('token','')
-        if not TOKEN_RE.fullmatch(token): raise HTTPException(404,'Playback unavailable')
+        if not TOKEN_RE.fullmatch(token):
+            logger.info(f'115播放请求拒绝：方法={method}，状态=404，原因=TOKEN_INVALID')
+            raise HTTPException(404,'Playback unavailable')
         ua=request.headers.get('user-agent','')
-        if len(ua)>1024 or any(ord(c)<32 for c in ua): raise HTTPException(400,'Invalid request')
+        if len(ua)>1024 or any(ord(c)<32 for c in ua):
+            logger.info(f'115播放请求拒绝：方法={method}，状态=400，原因=UA_INVALID')
+            raise HTTPException(400,'Invalid request')
         # Service.play coordinates with close() without holding the plugin lifecycle lock.
         service = plugin._service
         if not service:
@@ -133,9 +166,15 @@ def routes(plugin):
         key = (asyncio.get_running_loop(), id(service), token, ua)
         task = pending.get(key)
         if task is None or task.done():
-            task = asyncio.create_task(resolve_playback(service, token, ua))
+            rid = secrets.token_hex(4)
+            logger.info(f'115播放[{rid}] 开始解析：方法={method}，UA长度={len(ua)}')
+            task = asyncio.create_task(resolve_playback(service, token, ua, rid=rid))
+            task._p115_rid = rid
             pending[key] = task
             task.add_done_callback(partial(forget, key))
+        else:
+            rid = getattr(task, '_p115_rid', '-')
+            logger.info(f'115播放[{rid}] 复用在途解析：方法={method}')
         # A disconnected player must not cancel an in-progress copy or kick off another one.
         status, location, elapsed = await asyncio.shield(task)
         headers = {'Cache-Control': 'no-store', 'Server-Timing': f'p115-resolve;dur={elapsed:.1f}'}
