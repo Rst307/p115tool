@@ -8,7 +8,6 @@ import concurrent.futures
 import hashlib
 import json
 import logging
-import os
 from pathlib import Path
 import re
 import threading
@@ -18,6 +17,7 @@ from urllib.parse import urlsplit, unquote
 from .storage import parse_share
 from .models import ToolError
 from .import_history import message_title, display_name
+from .private_files import private_write
 
 URL = re.compile(r'https?://[^\s<>"\'，。；）)\]】]+', re.I)
 PASSWORD = re.compile(r'(?:提取码|提取密码|访问码|访问密码|密码|口令|pwd|password)\s*[:：=]?\s*([A-Za-z0-9]{4})(?![A-Za-z0-9])', re.I)
@@ -94,21 +94,6 @@ def extract_shares(message):
             password = next(iter(codes), '')
         if (code, password) not in results: results.append((code, password))
     return results, ambiguous
-
-
-def private_write(path, text):
-    temporary = path.with_suffix(path.suffix + '.tmp')
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as output:
-            # Windows has no fchmod. Keep the descriptor owned by the context
-            # even when permission setup fails, so the temporary file closes.
-            if hasattr(os, 'fchmod'): os.fchmod(output.fileno(), 0o600)
-            else: os.chmod(temporary, 0o600)
-            output.write(text); output.flush(); os.fsync(output.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists(): temporary.unlink()
 
 
 class TelegramMonitor:

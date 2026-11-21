@@ -4,6 +4,7 @@ import re
 import threading
 import time
 from urllib.parse import urlsplit
+from .cookie_renewal import CookieRenewal, cookie_identity
 from .models import RemoteFile, DownloadLink, RemoteError, MissingFile, SafetyError, ShareRejected
 
 OPEN_READ_METHODS = {
@@ -11,6 +12,8 @@ OPEN_READ_METHODS = {
     'fs_file': 'fs_info',
     'download_url': 'download_url_info',
 }
+COOKIE_RETRY_READS = frozenset(OPEN_READ_METHODS) | {'share_snap', 'share_download_url', 'recyclebin_list'}
+COOKIE_RENEWAL_COOLDOWN = 1800
 
 def response_code(response):
     if not isinstance(response,dict): return None
@@ -54,11 +57,7 @@ def normalize_file(data, parent="0", path=""):
 
 
 class P115ClientManager:
-    """One authenticated session. All remote operations share a serialized gate.
-
-    No automatic login on expired cookies; update credentials explicitly instead of
-    launching QR login/headless loops or retrying destructive calls.
-    """
+    """Serialize remote operations and replace the active Cookie only after verification."""
     def __init__(self, config, sdk=None):
         self.config = config
         self._lock = threading.RLock()
@@ -66,6 +65,7 @@ class P115ClientManager:
         self._moviepilot_storage = None
         self._last_request = 0.0
         self._closed = False
+        self._cookie_renewal = CookieRenewal(config)
 
     def close(self):
         # The pinned SDK has no per-client close/session API. Drain our shared
@@ -80,14 +80,108 @@ class P115ClientManager:
         if self._sdk is None:
             if not self.config.cookie:
                 raise RemoteError("115 cookie is not configured")
-            try:
-                from p115client import P115Client
-            except ImportError as exc:
-                raise RemoteError("Install p115client in the MoviePilot environment") from exc
-            # p115client 0.0.9.7.2 logs in only when cookies=None. Always pass
-            # explicit cookies and never call login()/relogin() automatically.
-            self._sdk = P115Client(self.config.cookie, console_qrcode=False)
+            self._sdk = self._new_cookie_client(self._cookie_renewal.record['cookie'] or self.config.cookie)
         return self._sdk
+
+    @staticmethod
+    def _new_cookie_client(cookie):
+        try:
+            from p115client import P115Client
+        except ImportError:
+            raise RemoteError('Install p115client in the MoviePilot environment') from None
+        return P115Client(cookie, console_qrcode=False)
+
+    def cookie_status(self):
+        enabled = self.config.cookie_auto_refresh and not self.config.use_moviepilot_auth
+        renewal = self._cookie_renewal
+        return {'state': renewal.state if enabled else 'DISABLED',
+                'renewed_at': renewal.record['renewed_at'] or None}
+
+    def check_cookie(self):
+        with self._lock:
+            self._check_cookie_locked()
+
+    @staticmethod
+    def _login_status(sdk):
+        from p115client.client import json_maybe_decrypt_loads
+
+        # The SDK's default parser returns False for malformed responses too.
+        # Distinguish a definite rejection from a broken status request.
+        def parse(_, body):
+            payload = json_maybe_decrypt_loads(body)
+            result = payload.get('state') if isinstance(payload, dict) else None
+            if type(result) not in (bool, int) or result not in (0, 1):
+                raise ValueError('Invalid 115 login status')
+            return bool(result)
+
+        return sdk.login_status(parse=parse, timeout=10, follow_redirects=False)
+
+    def _check_cookie_locked(self):
+        if self._closed or self.config.use_moviepilot_auth or not self.config.cookie_auto_refresh:
+            return False
+        renewal = self._cookie_renewal
+        now = time.monotonic()
+        if now < renewal.next_check:
+            return False
+        renewal.next_check = now + 60
+        try:
+            active = self._login_status(self._client())
+        except Exception:
+            renewal.state = 'STATUS_UNAVAILABLE'
+            return False
+        if active is not False:
+            renewal.state = 'VALID' if active is True else 'STATUS_UNAVAILABLE'
+            return False
+
+        primary = cookie_identity(self.config.cookie)
+        backup = cookie_identity(self.config.cookie_renewal_seed)
+        from p115client.const import SSOENT_TO_APP
+        if not primary or not backup or primary[0] != backup[0] or primary[1] == backup[1]:
+            renewal.state = 'INVALID_PAIR'
+            return False
+        device = SSOENT_TO_APP.get(primary[1])
+        if not device:
+            renewal.state = 'INVALID_PAIR'
+            return False
+        attempted_at = int(time.time())
+        if attempted_at < renewal.record['attempt_at'] + COOKIE_RENEWAL_COOLDOWN:
+            if renewal.state not in ('RENEWAL_FAILED', 'PERSISTENCE_FAILED'):
+                renewal.state = 'COOLDOWN'
+            return False
+        try:
+            seed = self._new_cookie_client(self.config.cookie_renewal_seed)
+            if self._login_status(seed) is not True:
+                renewal.state = 'BACKUP_EXPIRED'
+                return False
+        except Exception:
+            renewal.state = 'STATUS_UNAVAILABLE'
+            return False
+        try:
+            renewal.save(attempt_at=attempted_at)
+        except OSError:
+            renewal.state = 'PERSISTENCE_FAILED'
+            return False
+        try:
+            result = check_response(seed.login_with_app(device, timeout=10, follow_redirects=False))
+            issued = result['data']['cookie']
+            if not isinstance(issued, (dict, str)) or not issued:
+                raise ValueError('Invalid 115 Cookie')
+            updated = self._new_cookie_client(issued)
+            cookie = str(updated.cookies_str)
+            if cookie_identity(cookie) != primary or self._login_status(updated) is not True:
+                renewal.state = 'RENEWAL_FAILED'
+                return False
+        except Exception:
+            renewal.state = 'RENEWAL_FAILED'
+            return False
+        try:
+            renewal.save(cookie=cookie, renewed_at=int(time.time()))
+        except OSError:
+            renewal.state = 'PERSISTENCE_FAILED'
+            return False
+        self._sdk = updated
+        renewal.state = 'RENEWED'
+        return True
 
     def _call_moviepilot(self, method, args, kwargs):
         if method not in OPEN_READ_METHODS:
@@ -114,41 +208,50 @@ class P115ClientManager:
 
     def call(self, method, *args, **kwargs):
         with self._lock:
-            if self._closed:
-                raise RemoteError('115 client is stopped')
-            wait = 0.2 - (time.monotonic() - self._last_request)
-            if wait > 0:
-                time.sleep(wait)
             try:
-                if self.config.use_moviepilot_auth:
-                    result = self._call_moviepilot(method, args, kwargs)
-                    if method == 'fs_file' and response_code(result) == 20004:
-                        error = MissingFile('Remote file no longer exists')
-                        error.upstream_code = 20004
-                        raise error
-                else:
-                    result=getattr(self._client(), method)(*args, timeout=self.config.request_timeout, **kwargs)
-                if (method=='share_send' and isinstance(result,dict) and result.get('state') in (False,0)
-                        and isinstance(result.get('data',{}),dict) and not result.get('data',{}).get('share_code')):
-                    error=ShareRejected('115 rejected share creation')
-                    error.upstream_code=response_code(result)
-                    raise error
-                if isinstance(result,dict) and result.get('state') in (False,0): check_response(result)
-                return result
+                return self._call_once(method, args, kwargs)
             except RemoteError as exc:
-                exc.operation=method
+                if (method in COOKIE_RETRY_READS and getattr(exc, 'upstream_code', None) in (99, 990001)
+                        and self._check_cookie_locked()):
+                    return self._call_once(method, args, kwargs)
                 raise
-            except Exception as exc:
-                # SDK exceptions may embed cookie-bearing request representations.
-                code=next((code for arg in exc.args if (code:=response_code(arg)) is not None),None)
-                # Only a typed SDK absence on a read is proof that a copy disappeared.
-                missing=(method in ('fs_file','fs_files') and isinstance(exc,FileNotFoundError)
-                         and type(exc).__module__=='p115client.exception')
-                error=(MissingFile('Remote file no longer exists') if missing else RemoteError('115 SDK request failed'))
-                error.operation=method;error.upstream_code=code;error.sdk_error=type(exc).__name__
-                raise error from None
-            finally:
-                self._last_request = time.monotonic()
+
+    def _call_once(self, method, args, kwargs):
+        if self._closed:
+            raise RemoteError('115 client is stopped')
+        wait = 0.2 - (time.monotonic() - self._last_request)
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            if self.config.use_moviepilot_auth:
+                result = self._call_moviepilot(method, args, kwargs)
+                if method == 'fs_file' and response_code(result) == 20004:
+                    error = MissingFile('Remote file no longer exists')
+                    error.upstream_code = 20004
+                    raise error
+            else:
+                result=getattr(self._client(), method)(*args, timeout=self.config.request_timeout, **kwargs)
+            if (method=='share_send' and isinstance(result,dict) and result.get('state') in (False,0)
+                    and isinstance(result.get('data',{}),dict) and not result.get('data',{}).get('share_code')):
+                error=ShareRejected('115 rejected share creation')
+                error.upstream_code=response_code(result)
+                raise error
+            if isinstance(result,dict) and result.get('state') in (False,0): check_response(result)
+            return result
+        except RemoteError as exc:
+            exc.operation=method
+            raise
+        except Exception as exc:
+            # SDK exceptions may embed cookie-bearing request representations.
+            code=next((code for arg in exc.args if (code:=response_code(arg)) is not None),None)
+            # Only a typed SDK absence on a read is proof that a copy disappeared.
+            missing=(method in ('fs_file','fs_files') and isinstance(exc,FileNotFoundError)
+                     and type(exc).__module__=='p115client.exception')
+            error=(MissingFile('Remote file no longer exists') if missing else RemoteError('115 SDK request failed'))
+            error.operation=method;error.upstream_code=code;error.sdk_error=type(exc).__name__
+            raise error from None
+        finally:
+            self._last_request = time.monotonic()
 
     def directory_path(self, cid="0"):
         """Read the selected directory's ancestors, without trusting a manual prefix."""

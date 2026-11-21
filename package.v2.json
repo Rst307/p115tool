@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "实际与虚拟存储、分享临时转存、分类STRM及302播放",
     "labels": "115,STRM,媒体管理",
-    "version": "0.2.50",
+    "version": "0.2.51",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.2.51": "新增默认关闭的 115 Cookie 自动更新，通过同账号不同设备的有效备用会话续登。验证并持久保存新 Cookie，限频，续登后仅重试只读请求",
       "v0.2.50": "修复原生授权播放已有虚拟副本时的COOKIE_MODE_REQUIRED。只读核实临时副本后复用原STRM播放地址；无可用副本提示使用Cookie模式转存",
       "v0.2.49": "新增可选的MoviePilot原生115授权，免填Cookie即可浏览目录、扫描、生成STRM并302播放实际文件；分享、虚拟播放、Telegram导入与回收站继续使用独立的Cookie模式",
       "v0.2.48": "修复慢播放阻塞管理请求、分享导入任务交接误报空闲、STRM线程启动失败后状态滞留、Windows无硬链接环境无法创建STRM，以及Telegram启动异常导致插件整体不可用",

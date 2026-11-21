@@ -3,11 +3,14 @@ import json
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
+from .cookie_renewal import cookie_identity
 
 @dataclass
 class Config:
     enabled: bool = False
     cookie: str = ''
+    cookie_auto_refresh: bool = False
+    cookie_renewal_seed: str = ''
     use_moviepilot_auth: bool = False
     data_dir: str = './data/p115tool'
     strm_dir: str = './strm'
@@ -39,7 +42,7 @@ class Config:
         if 'source_cids_json' in data:
             data['source_cids'] = json.loads(data.pop('source_cids_json'))
         data = {k:v for k,v in data.items() if k in {f.name for f in fields(cls)}}
-        for k in ('enabled','use_moviepilot_auth','scheduled','organize_scheduled','auto_after_transfer','temp_cleanup','recycle_purge','recycle_empty_scheduled'):
+        for k in ('enabled','cookie_auto_refresh','use_moviepilot_auth','scheduled','organize_scheduled','auto_after_transfer','temp_cleanup','recycle_purge','recycle_empty_scheduled'):
             if k in data and type(data[k]) is not bool: raise ValueError('Invalid boolean')
         if 'request_timeout' in data:
             v=data['request_timeout']
@@ -59,8 +62,13 @@ class Config:
             raise ValueError('Invalid temporary directory')
         if isinstance(cfg.temp_days,str) and re.fullmatch(r'\d{1,3}',cfg.temp_days): cfg.temp_days=int(cfg.temp_days)
         if type(cfg.temp_days) is not int or not 1<=cfg.temp_days<=365: raise ValueError('Invalid retention days')
-        for k in ('cookie','data_dir','strm_dir','public_url','playback_prefix','scan_time','organize_time'):
+        for k in ('cookie','cookie_renewal_seed','data_dir','strm_dir','public_url','playback_prefix','scan_time','organize_time'):
             if not isinstance(getattr(cfg,k),str): raise ValueError('Invalid text')
+        if cfg.cookie_auto_refresh and not cfg.use_moviepilot_auth:
+            primary = cookie_identity(cfg.cookie)
+            seed = cookie_identity(cfg.cookie_renewal_seed)
+            if not primary or not seed or primary[0] != seed[0] or primary[1] == seed[1]:
+                raise ValueError('Cookie renewal requires two devices on the same 115 account')
         if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',cfg.scan_time): raise ValueError('Invalid time')
         if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',cfg.organize_time): raise ValueError('Invalid time')
         cfg.public_url=cfg.public_url.rstrip('/')

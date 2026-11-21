@@ -304,10 +304,10 @@ class PrivateWriteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             target=Path(directory)/'settings.json'
             target.write_text('original',encoding='utf-8')
-            with patch('p115tool.telegram.os.fchmod',side_effect=OSError('permission failure'),create=True):
+            with patch('p115tool.private_files.os.fchmod',side_effect=OSError('permission failure'),create=True):
                 with self.assertRaises(OSError):private_write(target,'replacement')
             self.assertEqual(target.read_text('utf-8'),'original')
-            self.assertFalse(target.with_suffix('.json.tmp').exists())
+            self.assertEqual(list(target.parent.iterdir()), [target])
 
 
 if __name__=='__main__': unittest.main()

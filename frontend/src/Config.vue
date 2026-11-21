@@ -11,6 +11,17 @@ let sources=initial.source_cids || []
 try { if(initial.source_cids_json) sources=JSON.parse(initial.source_cids_json) } catch {}
 const cloneSources=items=>Array.isArray(items)?items.map(item=>typeof item==='object'?{...item}:item):[]
 const config=ref({enabled:false,cookie:'',use_moviepilot_auth:false,strm_dir:'/opt/emby/strm',public_url:'http://localhost:3000',scheduled:false,organize_scheduled:false,organize_time:'02:00',organize_target_cid:'',auto_after_transfer:false,scan_time:'03:00',request_timeout:30,temp_cid:'',temp_days:7,temp_cleanup:true,recycle_purge:false,recycle_password:'',recycle_empty_scheduled:false,recycle_empty_time:'04:00',...Object.fromEntries(['enabled','cookie','use_moviepilot_auth','strm_dir','public_url','scheduled','organize_scheduled','organize_time','organize_target_cid','auto_after_transfer','scan_time','request_timeout','temp_cid','temp_days','temp_cleanup','recycle_purge','recycle_password','recycle_empty_scheduled','recycle_empty_time'].filter(k=>initial[k]!==undefined).map(k=>[k,initial[k]])),source_cids:cloneSources(sources),organize_cids:cloneSources(initial.organize_cids)})
+config.value.cookie_auto_refresh = initial.cookie_auto_refresh === true
+const renewalSeed=ref(''), renewalSeedChanged=ref(false), seedSaved=ref(initial.cookie_renewal_seed_set===true)
+const renewalStatus=ref(null)
+const renewalLabels={UNCHECKED:'等待首次检查',VALID:'主 Cookie 有效',RENEWED:'已自动续登',
+  STATUS_UNAVAILABLE:'无法核实登录状态',INVALID_PAIR:'检查两份 Cookie 是否属于同一账号、不同设备',
+  BACKUP_EXPIRED:'备用 Cookie 已失效，请重新登录后更新',RENEWAL_FAILED:'续登失败，请检查备用 Cookie',
+  COOLDOWN:'续登限频中，稍后自动检查',PERSISTENCE_FAILED:'无法保存续登记录，请检查插件数据目录权限'}
+watch(tab,async next=>{
+  if(next!=='connection' || initial.enabled!==true || initial.use_moviepilot_auth===true || initial.cookie_auto_refresh!==true)return
+  try { renewalStatus.value=await post(props.api,'data',{kind:'cookie_status'}) } catch { renewalStatus.value=null }
+},{immediate:true})
 const error=ref(''), busy=ref(false), picker=ref(false), folders=ref([]), trail=ref([{cid:'0',name:'115网盘'}]), folderBusy=ref(false)
 const loopbackAddress=computed(()=>{try{return ['localhost','127.0.0.1','[::1]'].includes(new URL(config.value.public_url).hostname)}catch{return false}})
 const groups=[{field:'source_cids',title:'STRM生成源文件夹',hint:'选择整理后的媒体库，如 /emby，用于扫描和生成STRM。'},{field:'organize_cids',title:'MoviePilot待整理文件夹',hint:'选择未整理资源，如 /下载/待整理，用于手动及定时整理。整理后移动到下方指定的STRM媒体库。'}]
@@ -40,8 +51,17 @@ function select() { if(folderField.value==='temp_cid')config.value.temp_cid=trai
 async function save() {
   if(busy.value)return
   busy.value=true;error.value='';saved.value=false
-  try { await saveConfiguration(props.api,config.value,v=>emit('save',v));saved.value=true }
-  catch(e) { error.value=requestErrorMessage(e,'配置无效，请检查目录ID、路径和播放地址。') }
+  try {
+    const payload={...config.value}
+    if(renewalSeedChanged.value)payload.cookie_renewal_seed=renewalSeed.value.trim()
+    await saveConfiguration(props.api,payload,v=>emit('save',v))
+    if(renewalSeedChanged.value)seedSaved.value=Boolean(payload.cookie_renewal_seed)
+    renewalSeed.value='';renewalSeedChanged.value=false;saved.value=true
+  }
+  catch(e) {
+    error.value=requestErrorMessage(e,'配置无效，请检查目录ID、路径和播放地址。')
+    if(config.value.cookie_auto_refresh && !config.value.use_moviepilot_auth) error.value+=' 自动更新需要同一 115 账号、不同设备的两份 Cookie。'
+  }
   finally { busy.value=false }
 }
 </script>
@@ -81,6 +101,17 @@ async function save() {
     <v-switch v-model="config.use_moviepilot_auth" label="使用 MoviePilot 原生 115 授权" color="primary" hide-details class="mb-3"/>
     <v-alert v-if="config.use_moviepilot_auth" type="info" variant="tonal" class="mb-4">请先在 MoviePilot 的存储设置登录 115。原生授权支持目录扫描、生成 STRM，以及实际文件和已核实临时副本的播放。分享导入、新转存、Telegram 导入和回收站操作使用 Cookie 模式。</v-alert>
     <v-text-field v-else v-model="config.cookie" type="password" label="115 Cookie" autocomplete="off" variant="outlined" density="comfortable" hint="用于连接你的115账号；输入内容默认隐藏。" persistent-hint class="mb-5"/>
+    <template v-if="!config.use_moviepilot_auth">
+      <v-switch v-model="config.cookie_auto_refresh" label="自动更新 115 Cookie" color="primary" hide-details class="mb-3"/>
+      <template v-if="config.cookie_auto_refresh">
+        <v-text-field v-model="renewalSeed" type="password" label="备用 115 Cookie" autocomplete="off" variant="outlined" density="comfortable"
+          :hint="seedSaved ? '已保存备用 Cookie，留空保留。' : '填写同一账号在另一种设备登录的 Cookie。'" persistent-hint class="mb-3"
+          @update:model-value="renewalSeedChanged=true;saved=false"/>
+        <p class="p115-note mb-3">每半小时检查主 Cookie，确认失效后用备用会话续登。续登可能影响主 Cookie 对应设备的其他登录。</p>
+        <p v-if="renewalLabels[renewalStatus?.state]" class="p115-note mb-3" aria-live="polite">{{renewalLabels[renewalStatus.state]}}<span v-if="renewalStatus.renewed_at"> · 上次续登 {{new Date(renewalStatus.renewed_at*1000).toLocaleString()}}</span></p>
+      </template>
+      <v-btn v-else-if="seedSaved && !renewalSeedChanged" variant="text" class="mb-3" @click="renewalSeed='';renewalSeedChanged=true;saved=false">清除已保存的备用 Cookie</v-btn>
+    </template>
     <v-text-field v-model="config.request_timeout" type="number" min="5" max="120" label="115请求超时（秒）" hint="5–120秒，默认30秒" persistent-hint variant="outlined" density="comfortable"/>
   </section>
   <section v-if="tab==='strm'" class="p115-section">

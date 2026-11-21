@@ -22,7 +22,7 @@ class P115Tool(_PluginBase):
     plugin_name='115 工具箱'
     plugin_desc='实际与虚拟存储、分享临时转存、分类STRM及302播放'
     plugin_icon='https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png'
-    plugin_version='0.2.50'
+    plugin_version='0.2.51'
     plugin_author='Rst307'
     author_url='https://github.com/Rst307'
     plugin_config_prefix='p115tool_'
@@ -40,6 +40,8 @@ class P115Tool(_PluginBase):
             try:
                 data=dict(config or {})
                 data.setdefault('use_moviepilot_auth', previous.use_moviepilot_auth)
+                data.setdefault('cookie_auto_refresh', previous.cookie_auto_refresh)
+                data.setdefault('cookie_renewal_seed', previous.cookie_renewal_seed)
                 data['data_dir']=str(self.get_data_path())
                 data['playback_prefix']='/api/v1/plugin/P115Tool'
                 candidate=Config.from_dict(data)
@@ -74,6 +76,10 @@ class P115Tool(_PluginBase):
         if not self.get_state(): return []
         from apscheduler.triggers.cron import CronTrigger
         jobs=[]
+        if self._config.cookie_auto_refresh and not self._config.use_moviepilot_auth:
+            jobs.append({'id':'p115tool_cookie_check','name':'115 Cookie 自动检查',
+                         'trigger':CronTrigger(minute='5,35',timezone='Asia/Shanghai'),
+                         'func':self.run_cookie_check,'kwargs':{}})
         if self._config.source_cids:
             jobs.append({'id':'p115tool_storage_refresh','name':'115存储30分钟刷新',
                          'trigger':CronTrigger(minute='*/30',timezone='Asia/Shanghai'),
@@ -90,6 +96,12 @@ class P115Tool(_PluginBase):
                          'trigger':CronTrigger(minute=15,timezone='Asia/Shanghai'),
                          'func':self.run_cleanup,'kwargs':{}})
         return jobs
+
+    def run_cookie_check(self):
+        service = self._service
+        if service:
+            service.client.check_cookie()
+
     def run_recycle_empty(self):
         with self._lifecycle:
             if not self._service or not self._config.enabled or not self._config.recycle_empty_scheduled or self._config.use_moviepilot_auth: return
@@ -152,6 +164,7 @@ class P115Tool(_PluginBase):
             if self._service: self._service.close(); self._service=None
     def get_form(self):
         data=asdict(self._config)
+        data['cookie_renewal_seed_set'] = bool(data.pop('cookie_renewal_seed'))
         return [{'component':'VAlert','props':{'type':'info'},'text':'配置115源文件夹、STRM输出目录和播放地址，然后在详情页生成STRM。'}],data
     def get_page(self):
         return [{'component':'VAlert','props':{'type':'info'},'text':self._initialization_error or '实际与虚拟存储、分类STRM和302播放，请使用原生Vue详情页。'}]

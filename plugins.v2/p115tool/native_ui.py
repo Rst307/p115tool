@@ -21,7 +21,12 @@ def dispatch(plugin,route,payload):
     with plugin._lifecycle:
         if route=='validate':
             if set(payload)!={'config'}: raise ValueError('Invalid config envelope')
-            Config.from_dict(payload['config']); return {'valid':True}
+            if not isinstance(payload['config'], dict): raise ValueError('Invalid config')
+            candidate = {**payload['config']}
+            candidate.setdefault('use_moviepilot_auth', plugin._config.use_moviepilot_auth)
+            candidate.setdefault('cookie_auto_refresh', plugin._config.cookie_auto_refresh)
+            candidate.setdefault('cookie_renewal_seed', plugin._config.cookie_renewal_seed)
+            Config.from_dict(candidate); return {'valid':True}
         if route=='data' and (payload=={'kind':'bootstrap'} or set(payload)=={'kind','ui_contract'} and payload.get('kind')=='bootstrap'):
             current=type(payload.get('ui_contract')) is int and payload['ui_contract']==3
             return {'enabled':plugin.get_state() if current else False,
@@ -34,6 +39,7 @@ def dispatch(plugin,route,payload):
                     'jobs':[],'account':{},'metrics':{},'daily':{},'cumulative':{}}
         service=plugin._service
         if not service: raise ToolError('Service unavailable')
+        if route=='data' and payload=={'kind':'cookie_status'}: return service.client.cookie_status()
         if route=='data' and payload=={'kind':'telegram'}: return service.telegram.snapshot()
         if route=='data' and set(payload)=={'kind','page','state','search'} and payload['kind']=='telegram':
             return service.telegram.snapshot(page=payload['page'], state_filter=payload['state'], search=payload['search'])
