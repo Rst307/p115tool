@@ -76,9 +76,11 @@ def routes(plugin):
         ua=request.headers.get('user-agent','')
         if len(ua)>1024 or any(ord(c)<32 for c in ua): raise HTTPException(400,'Invalid request')
         def resolve():
-            with plugin._lifecycle:
-                if not plugin._service: raise ToolError('Service unavailable')
-                return plugin._service.play(token,ua)
+            # Service.play coordinates with close() after we take a reference.
+            # Avoid holding the plugin lifecycle lock during remote playback I/O.
+            service = plugin._service
+            if not service: raise ToolError('Service unavailable')
+            return service.play(token, ua)
         try: location=await run_in_threadpool(resolve)
         except MissingFile as exc:
             log_failure(exc)

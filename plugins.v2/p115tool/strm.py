@@ -70,8 +70,11 @@ class StrmManager:
                 if target.is_symlink() or not target.resolve().is_relative_to(self.root) or target.read_bytes()!=original:
                     raise SafetyError('Existing STRM changed after checkpoint')
                 os.replace(temp,target)
+            elif os.name == 'nt':
+                # Windows rename fails if the destination was created concurrently.
+                os.rename(temp, target)
             else:
-                # Atomic create without overwriting a file created concurrently.
+                # POSIX rename would overwrite a file created concurrently.
                 os.link(temp,target)
         finally:
             if temp and temp.exists(): temp.unlink()

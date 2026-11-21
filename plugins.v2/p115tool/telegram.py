@@ -119,7 +119,7 @@ class TelegramMonitor:
         self.session_path = self.directory / 'telegram-account.session'
         self.settings = dict(DEFAULTS, channels=[])
         self._guard = threading.RLock(); self._thread = None; self._loop = None
-        self._ready = threading.Event(); self._closing = False
+        self._ready = None; self._closing = False
         self._client = None; self._web = None; self._phone = ''; self._phone_hash = ''; self._login_until = 0
         self._state = 'DISABLED'; self._error = None; self._last_poll = None
         self._channels = []; self._next_poll = 0
@@ -154,7 +154,10 @@ class TelegramMonitor:
             except Exception: self._error = 'CONFIG_INVALID'
         self._network = self._network_unknown()
         if self.settings['enabled']:
-            self._state = 'CONNECTING'; self._ensure_thread()
+            self._state = 'CONNECTING'
+            try: self._ensure_thread()
+            except ToolError:
+                self._state = self._error = 'TELEGRAM_UNAVAILABLE'
 
     def _validate(self, data, preserve=True):
         if not isinstance(data, dict) or set(data) - set(DEFAULTS) - {'clear_proxy'}:
@@ -303,22 +306,41 @@ class TelegramMonitor:
     def _ensure_thread(self):
         with self._guard:
             if self._closing: raise ToolError('Telegram stopped')
-            if not self._thread:
-                self._thread = threading.Thread(target=self._thread_main, name='p115tool-telegram', daemon=True)
-                self._thread.start()
-        if not self._ready.wait(5): raise ToolError('Telegram unavailable')
+            if not self._thread or not self._thread.is_alive():
+                self._ready = concurrent.futures.Future()
+                thread = threading.Thread(target=self._thread_main, args=(self._ready,),
+                                          name='p115tool-telegram', daemon=True)
+                try: thread.start()
+                except RuntimeError: raise ToolError('Telegram unavailable') from None
+                self._thread = thread
+            ready = self._ready
+        try: ready.result(timeout=5)
+        except concurrent.futures.TimeoutError: raise ToolError('Telegram unavailable') from None
 
-    def _thread_main(self):
-        loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
-        self._loop = loop; self._op = asyncio.Lock()
-        self._poll_task = loop.create_task(self._poll_loop())
-        self._ready.set()
+    def _thread_main(self, ready):
+        try: loop = asyncio.new_event_loop()
+        except Exception:
+            with self._guard:
+                self._thread = None
+                ready.set_exception(ToolError('Telegram unavailable'))
+            return
+        asyncio.set_event_loop(loop)
+        with self._guard:
+            if self._closing:
+                loop.close()
+                ready.set_exception(ToolError('Telegram stopped'))
+                return
+            self._loop = loop; self._op = asyncio.Lock()
+            self._poll_task = loop.create_task(self._poll_loop())
+            ready.set_result(None)
         try: loop.run_forever()
         finally:
             pending = asyncio.all_tasks(loop)
             for task in pending: task.cancel()
             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            loop.close()
+            with self._guard:
+                self._loop = None
+                loop.close()
 
     def _submit(self, operation, *args):
         self._ensure_thread()
@@ -672,7 +694,8 @@ class TelegramMonitor:
         with self._guard:
             if self._closing: return
             self._closing = True
-        if not self._thread: return
+            loop, thread = self._loop, self._thread
+        if loop is None: return
         async def shutdown():
             try:
                 current = asyncio.current_task()
@@ -683,8 +706,8 @@ class TelegramMonitor:
             finally:
                 # Schedule stop from the owning loop while it is awake, after
                 # the concurrent future receives its completion notification.
-                self._loop.call_later(0.01, self._loop.stop)
-        future = asyncio.run_coroutine_threadsafe(shutdown(), self._loop)
+                loop.call_later(0.01, loop.stop)
+        future = asyncio.run_coroutine_threadsafe(shutdown(), loop)
         try: future.result(20)
         except Exception: pass
-        self._thread.join()
+        thread.join()

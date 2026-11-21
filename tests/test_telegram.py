@@ -89,6 +89,21 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(self.monitor.snapshot()['state'], 'DISABLED')
         self.assertEqual(self.drive.calls, [])
 
+    def test_failed_telegram_loop_start_leaves_strm_available_and_allows_retry(self):
+        settings = {'enabled': True, 'mode': 'web', 'channels': ['@example']}
+        self.monitor.settings_path.write_text(json.dumps(settings), encoding='utf-8')
+        self.service.close()
+        with patch('p115tool.telegram.asyncio.new_event_loop', side_effect=OSError('mock private network details')):
+            self.service = Service(self.cfg, client=self.drive)
+        self.monitor = self.service.telegram
+        self.assertEqual(self.service.snapshot()['state'], 'IDLE')
+        self.assertEqual(self.monitor.snapshot()['error'], 'TELEGRAM_UNAVAILABLE')
+        self.assertTrue(self.monitor.settings['enabled'])
+        with patch.object(self.monitor, '_poll_loop', new_callable=AsyncMock):
+            self.assertEqual(self.monitor.configure({**settings, 'enabled': False})['state'], 'SAVED')
+        self.assertEqual(self.monitor.snapshot()['state'], 'DISABLED')
+        self.assertEqual(self.drive.calls, [])
+
     def test_settings_secrets_preserved_and_not_returned(self):
         settings = {'enabled':False,'api_id':123,'api_hash':'a'*32,'channels':['@example'], 'proxy':'socks5://user:secret@localhost:1080'}
         self.assertEqual(self.monitor.configure(settings)['state'], 'SAVED')

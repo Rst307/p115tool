@@ -18,6 +18,8 @@ class Service:
         self.config=config
         self.client=client or P115ClientManager(config)
         self._lock=threading.RLock(); self._stop=threading.Event(); self._worker=None
+        self._playback_idle = threading.Condition(self._lock)
+        self._active_playbacks = 0
         self._closed=False; self.recognizer=recognizer
         self._db=None
         from .virtual_organize import organize_virtual
@@ -105,9 +107,15 @@ class Service:
                 if rerun: self._rerun=True
                 return self.snapshot()
             if not self.config.source_cids and not self.storage.virtual_rows(): raise ValueError('Configure source folders')
-            self._save_state({'state':'RUNNING','found':0,'generated':0,'failed':0,'error':None})
+            state = {'state':'RUNNING','found':0,'generated':0,'failed':0,'error':None}
+            self._save_state(state)
             self._worker=threading.Thread(target=self._generate_pending,name='p115tool-strm',daemon=True)
-            self._worker.start()
+            try:
+                self._worker.start()
+            except RuntimeError:
+                self._worker = None
+                self._save_state({**state, 'state':'FAILED', 'error':'START_FAILED'})
+                raise ToolError('STRM task did not start') from None
             return self.snapshot()
 
     def request_auto_generate(self):
@@ -304,17 +312,25 @@ class Service:
             return token
 
     def play(self,token,ua):
-        with self._lock:
+        with self._playback_idle:
             if self._closed: raise ToolError('Service stopped')
             row=self.query('SELECT file_id FROM strm_files WHERE token=?',(token,),one=True)
             if not row: raise MissingFile('Playback mapping unavailable')
-        return self.storage.play(row['file_id'],ua)
+            self._active_playbacks += 1
+        try:
+            return self.storage.play(row['file_id'], ua)
+        finally:
+            with self._playback_idle:
+                self._active_playbacks -= 1
+                if not self._active_playbacks:
+                    self._playback_idle.notify_all()
 
     def close(self):
-        with self._lock:
+        with self._playback_idle:
             self._closed=True; self._stop.set(); worker=self._worker
             self._auto_revision+=1; self._rerun=False
             if self._auto_timer: self._auto_timer.cancel(); self._auto_timer=None
+            self._playback_idle.wait_for(lambda: not self._active_playbacks)
         from .iso_transfer import unregister
         unregister(self)
         if worker and worker is not threading.current_thread(): worker.join()

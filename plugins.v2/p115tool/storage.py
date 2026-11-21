@@ -160,7 +160,10 @@ class StorageManager:
         self.upgrades=VirtualUpgrades(self)
 
     @property
-    def busy(self): return bool(self._thread and self._thread.is_alive())
+    def busy(self):
+        # A completing worker hands off to the next job under this lock.
+        with self.service._lock:
+            return bool(self._thread and self._thread.is_alive())
 
     def job(self):
         if self._live_job is not None:
