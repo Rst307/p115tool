@@ -6,6 +6,12 @@ import time
 from urllib.parse import urlsplit
 from .models import RemoteFile, DownloadLink, RemoteError, MissingFile, SafetyError, ShareRejected
 
+OPEN_READ_METHODS = {
+    'fs_files': 'fs_files',
+    'fs_file': 'fs_info',
+    'download_url': 'download_url_info',
+}
+
 def response_code(response):
     if not isinstance(response,dict): return None
     for key in ('errno','errNo','errcode','errCode','code','msg_code'):
@@ -57,6 +63,7 @@ class P115ClientManager:
         self.config = config
         self._lock = threading.RLock()
         self._sdk = sdk
+        self._moviepilot_storage = None
         self._last_request = 0.0
         self._closed = False
 
@@ -67,6 +74,7 @@ class P115ClientManager:
         with self._lock:
             self._closed = True
             self._sdk = None
+            self._moviepilot_storage = None
 
     def _client(self):
         if self._sdk is None:
@@ -81,6 +89,29 @@ class P115ClientManager:
             self._sdk = P115Client(self.config.cookie, console_qrcode=False)
         return self._sdk
 
+    def _call_moviepilot(self, method, args, kwargs):
+        if method not in OPEN_READ_METHODS:
+            raise RemoteError('This operation requires 115 Cookie mode')
+        if self._moviepilot_storage is None:
+            from app.modules.filemanager.storages.u115 import U115Pan
+            self._moviepilot_storage = U115Pan()
+        # MoviePilot owns refresh and persistence. Explicit Authorization also
+        # bypasses the SDK's refresh-and-retry loop for Open API requests.
+        token = self._moviepilot_storage.access_token
+        if not isinstance(token, str) or not re.fullmatch(r'[!-~]+', token):
+            raise RemoteError('MoviePilot 115 authorization unavailable')
+        if self._sdk is None:
+            from p115client import P115OpenClient
+            self._sdk = P115OpenClient(access_token=token, console_qrcode=False)
+        if method == 'fs_file':
+            args = ({'file_id': args[0]},)
+        elif method == 'fs_files':
+            args = ({**args[0], 'record_open_time': 0},)
+        return getattr(self._sdk, OPEN_READ_METHODS[method])(
+            *args, **kwargs, headers={'Authorization': 'Bearer ' + token},
+            follow_redirects=False, timeout=self.config.request_timeout,
+        )
+
     def call(self, method, *args, **kwargs):
         with self._lock:
             if self._closed:
@@ -89,7 +120,10 @@ class P115ClientManager:
             if wait > 0:
                 time.sleep(wait)
             try:
-                result=getattr(self._client(), method)(*args, timeout=self.config.request_timeout, **kwargs)
+                if self.config.use_moviepilot_auth:
+                    result = self._call_moviepilot(method, args, kwargs)
+                else:
+                    result=getattr(self._client(), method)(*args, timeout=self.config.request_timeout, **kwargs)
                 if (method=='share_send' and isinstance(result,dict) and result.get('state') in (False,0)
                         and isinstance(result.get('data',{}),dict) and not result.get('data',{}).get('share_code')):
                     error=ShareRejected('115 rejected share creation')
@@ -150,6 +184,7 @@ class P115ClientManager:
     def list_files(self, cid="0"):
         offset = 0
         seen = set()
+        expected_count = None
         while True:
             resp = check_response(self.call("fs_files", {"cid": cid, "offset": offset, "limit": 1000, "cur": 1, "show_dir": 1}))
             directory = self._directory_path(resp, str(cid))
@@ -161,11 +196,23 @@ class P115ClientManager:
             rows = resp.get("data")
             if not isinstance(rows, list):
                 raise RemoteError("Malformed directory response")
+            if self.config.use_moviepilot_auth:
+                count = resp.get('count')
+                if (type(count) not in (str, int) or not str(count).isdigit()
+                        or (expected_count is not None and expected_count != int(count))
+                        or offset + len(rows) > int(count)):
+                    raise RemoteError('Incomplete directory pagination')
+                expected_count = int(count)
             for row in rows:
                 name = row.get('n') or row.get('fn') or row.get('file_name') or row.get('name') or row.get('category_name')
                 from .strm import safe_parts
                 if not isinstance(name, str) or len(safe_parts(name)) != 1:
                     raise SafetyError('Invalid listed file name')
+                if self.config.use_moviepilot_auth:
+                    category = str(row.get('fc', ''))
+                    if category not in ('0', '1'):
+                        raise RemoteError('Unsupported 115 file metadata shape')
+                    row = {**row, 'is_directory': category == '0'}
                 file = normalize_file(row, str(cid), directory.rstrip('/') + '/' + name)
                 if file.file_id in seen:
                     raise RemoteError("Directory changed while paging; retry scan")
@@ -222,7 +269,21 @@ class P115ClientManager:
         if not any(host == s or host.endswith("." + s) for s in self.config.allowed_cdn_suffixes if s):
             raise SafetyError("Download URL is outside configured 115 CDN domains")
 
-    def normal_link(self, pickcode, ua):
+    def normal_link(self, pickcode, ua, *, file_id=None):
+        if self.config.use_moviepilot_auth:
+            if not isinstance(pickcode, str) or not re.fullmatch(r'[A-Za-z0-9]+', pickcode) or not file_id:
+                raise SafetyError('115 file identity mismatch')
+            response = check_response(self.call('download_url', pickcode, user_agent=ua))
+            entries = response.get('data')
+            entry = entries.get(str(file_id)) if isinstance(entries, dict) and len(entries) == 1 else None
+            if not isinstance(entry, dict) or entry.get('pick_code', pickcode) != pickcode:
+                raise SafetyError('115 file identity mismatch')
+            link = entry.get('url')
+            if not isinstance(link, dict) or not isinstance(link.get('url'), str):
+                raise RemoteError('115 playback link unavailable')
+            # The SDK echoes request headers. Validate the CDN URL without
+            # propagating the Authorization header or other account credentials.
+            return self._link(link['url'])
         # The SDK defaults to os_windows, which can reject a valid web cookie
         # with errno 99 even while file reads and chrome downloads succeed.
         return self._link(self.call("download_url", pickcode, user_agent=ua, app="chrome"))

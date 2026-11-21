@@ -12,6 +12,7 @@ const importQueue=ref({pending:0,limit:100,tasks:[]})
 const purgeSource=ref(true),recycleKeyConfigured=ref(false)
 const deleteDialog=ref(false),deleteIds=ref([])
 const tempConfigured=ref(null),purgeEnabled=ref(false),purgeBlocked=ref(false)
+const nativeAuth=ref(false)
 const purgePending=ref([]),purgePendingTotal=ref(0)
 const recycleEmpty=ref({scheduled:false,stage:'IDLE',blocked:false})
 const sourcesConfigured=ref(false),scannedAt=ref(null)
@@ -32,6 +33,7 @@ async function refresh(){
     items.value=result.items;total.value=result.total;job.value=result.job;queued.value=result.queued===true;days.value=result.temp_days;automatic.value=result.cleanup_enabled
     importQueue.value=result.import_queue || {pending:0,limit:100,tasks:[]}
     tempConfigured.value=result.temp_configured===true
+    nativeAuth.value=result.use_moviepilot_auth===true
     purgeEnabled.value=result.recycle_purge_enabled===true;purgeBlocked.value=result.recycle_purge_blocked===true
     purgePending.value=result.recycle_purge_pending || [];purgePendingTotal.value=result.recycle_purge_pending_total || 0
     recycleKeyConfigured.value=result.recycle_key_configured===true
@@ -84,6 +86,8 @@ onUnmounted(()=>{clearInterval(timer);link.value='';password.value='';share.valu
   <v-alert v-if="job.action==='scan' && ['FAILED','INTERRUPTED'].includes(job.state)" type="warning" variant="tonal" class="mb-4">媒体库扫描未完成，保留上次完整扫描结果。请检查115连接和源目录后重新扫描。</v-alert>
   <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{error}}</v-alert>
   <v-alert v-if="notice" type="info" variant="tonal" class="mb-4">{{notice}}</v-alert>
+  <v-alert v-if="nativeAuth" type="info" variant="tonal" class="mb-4">当前使用 MoviePilot 原生授权。分享导入、虚拟播放、副本清理和回收站操作需要 Cookie 模式。</v-alert>
+  <template v-else>
   <v-alert v-if="tempConfigured===false" type="warning" variant="tonal" class="mb-4">{{temporaryStorageHint}}<div class="mt-2"><v-btn variant="text" @click="emit('configure')">打开存储设置</v-btn></div></v-alert>
   <div class="p115-actions mb-4"><v-btn color="primary" prepend-icon="mdi-link-plus" :disabled="shareImportBlocked" @click="openImport()">添加115分享</v-btn><v-btn variant="tonal" :disabled="blocked || !actualSelection.length" @click="allActual=false;purgeSource=true;consent=false;virtualDialog=true">转为虚拟存储（{{actualSelection.length}}）</v-btn><v-btn variant="tonal" :disabled="blocked || !sourcesConfigured" @click="allActual=true;purgeSource=true;consent=false;virtualDialog=true">全部实际存储转为虚拟</v-btn><v-btn variant="text" :disabled="blocked || !selected.length" @click="act({action:'reconcile_storage',ids:[...selected]})">只读核实结果</v-btn><v-btn variant="text" :disabled="blocked" @click="act({action:'cleanup_copies'})">清理到期副本</v-btn></div>
   <p class="p115-note mb-4">副本保留 {{days}} 天，自动清理{{automatic?'已开启':'未开启'}}。每次播放保护至少24小时。副本删除后按需重转存；转存待恢复时自动核实，旧目录为空或已删除则换新目录恢复，连续失败间隔至少30秒。分享失效时保留副本；库内源视频仅在你选择并确认虚拟化时删除。</p>
@@ -92,16 +96,17 @@ onUnmounted(()=>{clearInterval(timer);link.value='';password.value='';share.valu
     <div class="mt-2">{{recycleEmptyMessage(recycleEmpty)}} 已核实删除 {{recycleEmpty.done || 0}} / {{recycleEmpty.total || 0}} 个条目。<span v-if="recycleEmpty.updated_at">更新时间：{{new Date(recycleEmpty.updated_at*1000).toLocaleString()}}。</span></div>
     <v-btn v-if="recycleEmpty.blocked" variant="text" :disabled="blocked" @click="act({action:'reconcile_empty_recycle'})">只读核实清空结果</v-btn>
   </v-alert>
+  </template>
   <div class="p115-grid"><v-select v-model="kind" :items="[{title:'全部资源',value:'ALL'},{title:'实际存储',value:'ACTUAL'},{title:'虚拟存储',value:'VIRTUAL'}]" label="存储类型" variant="outlined" @update:model-value="filter"/><v-text-field v-model="search" label="搜索名称或路径" variant="outlined" maxlength="100" @keyup.enter="filter"/></div>
   <div class="p115-actions mb-3"><v-btn variant="text" :loading="loading" @click="filter">搜索／刷新</v-btn><span class="p115-note">共 {{total}} 个资源；每页50条</span></div>
   <div class="p115-actions mb-3"><v-btn color="error" variant="tonal" prepend-icon="mdi-delete-outline" :disabled="blocked || !selected.length" @click="openDelete(selected)">删除存储记录（{{selected.length}}）</v-btn></div>
-  <p v-if="job.state==='RUNNING' && job.action==='scan'" class="p115-note mb-3">刷新期间可选择并提交文件操作；操作将在扫描后执行，并核实文件身份和存在性。</p>
+  <p v-if="!nativeAuth && job.state==='RUNNING' && job.action==='scan'" class="p115-note mb-3">刷新期间可选择并提交文件操作；操作将在扫描后执行，并核实文件身份和存在性。</p>
   <v-progress-linear v-if="job.state==='RUNNING'" :indeterminate="conversionProgress===null" :model-value="conversionProgress || 0" color="primary" aria-label="转换处理进度"/>
-  <v-alert v-if="purgeBlocked" type="warning" variant="tonal" class="mb-4">回收站永久删除有 {{purgePendingTotal}} 个未核实检查点，不会自动重试。<v-btn variant="text" :disabled="blocked" @click="act({action:'reconcile_recycle'})">只读核实回收站检查点</v-btn><p class="mt-2">每次最多核实100条；仅解除已记录目标且目标及源文件均不存在的检查点，目标仍在或身份缺失时保留，不提交删除。</p>开启全局或本次永久删除时暂停后续删除；关闭两处永久删除选项可继续普通删除，不补删旧条目。
+  <v-alert v-if="!nativeAuth && purgeBlocked" type="warning" variant="tonal" class="mb-4">回收站永久删除有 {{purgePendingTotal}} 个未核实检查点，不会自动重试。<v-btn variant="text" :disabled="blocked" @click="act({action:'reconcile_recycle'})">只读核实回收站检查点</v-btn><p class="mt-2">每次最多核实100条；仅解除已记录目标且目标及源文件均不存在的检查点，目标仍在或身份缺失时保留，不提交删除。</p>开启全局或本次永久删除时暂停后续删除；关闭两处永久删除选项可继续普通删除，不补删旧条目。
     <div v-for="(checkpoint,index) in purgePending" :key="index" class="mt-2">关联文件 {{checkpoint.file_id || 'ID无法确认'}}：{{recycleCheckpointMessage(checkpoint)}}<span v-if="checkpoint.operation!=='unknown'"> 接口：{{checkpoint.operation}}。</span><span v-if="checkpoint.upstream_code!=null"> 115错误码：{{checkpoint.upstream_code}}。</span></div>
     <div v-if="purgePendingTotal>purgePending.length" class="mt-2">仅显示前 {{purgePending.length}} 个检查点。</div>
   </v-alert>
-  <v-alert v-else-if="purgeEnabled" type="warning" variant="tonal" class="mb-4">已启用回收站永久删除：实际转虚拟和到期临时副本删除后，匹配条目将被永久删除，无法从回收站恢复。</v-alert>
+  <v-alert v-else-if="!nativeAuth && purgeEnabled" type="warning" variant="tonal" class="mb-4">已启用回收站永久删除：实际转虚拟和到期临时副本删除后，匹配条目将被永久删除，无法从回收站恢复。</v-alert>
   <v-alert v-if="job.state!=='IDLE'" :type="['FAILED','PARTIAL','INTERRUPTED'].includes(job.state)?'warning':'info'" variant="tonal" class="mb-4" aria-live="polite">任务{{({RUNNING:'运行中',DONE:'完成',PARTIAL:'部分未完成',FAILED:'失败',INTERRUPTED:'已中断'})[job.state] || job.state}}：成功 {{job.done || 0}}，未完成 {{job.failed || 0}}<span v-if="job.total!=null">，共 {{job.total}} 个</span><span v-if="job.remaining">，尚未处理 {{job.remaining}} 个</span>。<span v-if="job.pending">等待批次末尾复查 {{job.pending}} 个。</span><span v-if="job.rechecked">已复查 {{job.rechecked}} 个。</span><div v-if="job.state==='RUNNING'">当前步骤：{{storagePhases[job.phase] || '处理资源'}}<span v-if="job.current">（文件ID：{{job.current}}）</span><span v-if="job.phase==='SCANNING'">，已扫描 {{job.scanned || 0}} 个目录，发现 {{job.found || 0}} 个视频</span><span v-if="job.phase==='REGISTERING'">，已登记 {{job.registered || 0}} / {{job.total || 0}} 个视频</span>。</div><div v-if="job.error">{{storageErrorMessage(job.error)}}</div><div v-for="result in (job.results || []).filter(r=>r.state==='FAILED')" :key="result.id" class="mt-2">文件 {{result.id}}：{{conversionResultMessage(result)}}<span v-if="result.upstream_code!=null">（115错误码：{{result.upstream_code}}）</span></div></v-alert>
   <v-card v-if="importQueue.tasks.length" variant="outlined" class="mb-4" aria-label="分享导入队列">
     <v-card-title>分享导入队列 · 等待 {{importQueue.pending}} / {{importQueue.limit}}</v-card-title>
@@ -120,7 +125,7 @@ onUnmounted(()=>{clearInterval(timer);link.value='';password.value='';share.valu
     <v-list-item v-for="item in items" :key="item.id" :title="item.name" :subtitle="item.path">
       <template #append><v-btn size="small" color="error" variant="text" :disabled="blocked" @click="openDelete([item.id])">删除记录</v-btn></template>
       <template #prepend><v-checkbox-btn v-model="selected" :value="item.id" :disabled="blocked" :aria-label="`选择 ${item.name}`"/></template>
-      <div class="p115-actions mt-2"><v-chip size="small" :color="item.kind==='VIRTUAL'?'primary':'secondary'">{{storageTypes[item.kind]}}</v-chip><span class="p115-note">{{stage(item.stage)}}</span><span v-if="item.kind==='VIRTUAL' || item.copy_state" class="p115-note">临时副本：{{stage(item.copy_state)}}</span><v-btn v-if="item.stage==='SHARE_CREATE_UNKNOWN'" size="small" variant="text" :disabled="blocked" @click="openImport(item.id)">接入已创建分享</v-btn><v-btn v-if="['SOURCE_DELETE_UNKNOWN','SHARE_UNAVAILABLE'].includes(item.stage)" size="small" variant="text" :disabled="blocked" @click="act({action:'reconcile_storage',ids:[item.id]})">只读核实此资源</v-btn><v-btn v-if="item.kind==='ACTUAL' && ['SHARE_CHECK','SHARE_REJECTED'].includes(item.stage)" size="small" variant="text" :disabled="blocked" @click="selected=[item.id];allActual=false;purgeSource=true;consent=false;virtualDialog=true">继续转换</v-btn><v-btn v-if="item.kind==='VIRTUAL'" size="small" variant="text" @click="showShare(item.id)">查看分享</v-btn></div>
+      <div class="p115-actions mt-2"><v-chip size="small" :color="item.kind==='VIRTUAL'?'primary':'secondary'">{{storageTypes[item.kind]}}</v-chip><span class="p115-note">{{stage(item.stage)}}</span><span v-if="item.kind==='VIRTUAL' || item.copy_state" class="p115-note">临时副本：{{stage(item.copy_state)}}</span><v-btn v-if="!nativeAuth && item.stage==='SHARE_CREATE_UNKNOWN'" size="small" variant="text" :disabled="blocked" @click="openImport(item.id)">接入已创建分享</v-btn><v-btn v-if="!nativeAuth && ['SOURCE_DELETE_UNKNOWN','SHARE_UNAVAILABLE'].includes(item.stage)" size="small" variant="text" :disabled="blocked" @click="act({action:'reconcile_storage',ids:[item.id]})">只读核实此资源</v-btn><v-btn v-if="!nativeAuth && item.kind==='ACTUAL' && ['SHARE_CHECK','SHARE_REJECTED'].includes(item.stage)" size="small" variant="text" :disabled="blocked" @click="selected=[item.id];allActual=false;purgeSource=true;consent=false;virtualDialog=true">继续转换</v-btn><v-btn v-if="item.kind==='VIRTUAL'" size="small" variant="text" @click="showShare(item.id)">查看分享</v-btn></div>
     </v-list-item>
   </v-list>
   <v-pagination v-if="total>50" v-model="page" :length="Math.ceil(total/50)" :total-visible="5" @update:model-value="selected=[];refresh()"/>

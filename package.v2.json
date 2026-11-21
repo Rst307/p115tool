@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "实际与虚拟存储、分享临时转存、分类STRM及302播放",
     "labels": "115,STRM,媒体管理",
-    "version": "0.2.48",
+    "version": "0.2.49",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.2.49": "新增可选的MoviePilot原生115授权，免填Cookie即可浏览目录、扫描、生成STRM并302播放实际文件；分享、虚拟播放、Telegram导入与回收站继续使用独立的Cookie模式",
       "v0.2.48": "修复慢播放阻塞管理请求、分享导入任务交接误报空闲、STRM线程启动失败后状态滞留、Windows无硬链接环境无法创建STRM，以及Telegram启动异常导致插件整体不可用",
       "v0.2.47": "新增默认关闭的每日定时清空115回收站，支持北京时间、安全密钥和状态查看；全量快照分批永久删除，持久检查点与未知结果只读核实、不重试删除",
       "v0.2.46": "Telegram导入记录关联频道标题与MoviePilot识别剧名/季集，记录开始结束时间、尝试次数与视频总数；支持全部历史搜索、状态筛选、分页和原消息入口，旧记录从本地映射补全名称",

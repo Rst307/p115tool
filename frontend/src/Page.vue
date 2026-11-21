@@ -10,7 +10,7 @@ const tab=ref('organize'),schedule=ref({scheduled:false,time:'02:00'}),target=re
 const enabled=ref(false),error=ref(''),status=ref(null),busy=ref(false)
 const sources=ref([]),selected=ref([]),organizeBusy=ref(false),organizeUnknown=ref(false),notice=ref('')
 const labels={IDLE:'尚未生成',RUNNING:'正在生成',DONE:'生成完成',PARTIAL:'部分文件失败',FAILED:'扫描失败',INTERRUPTED:'上次任务已中断，可重新生成'}
-const errors={SCAN_FAILED:'115目录扫描失败，请检查Cookie和目录ID。已生成文件保留，修正配置后可重新生成。',OUTPUT_CONFLICT:'部分文件身份或输出路径存在冲突，请检查已有STRM与源文件。',FILE_GENERATION_FAILED:'部分文件生成失败，请检查输出目录权限和挂载。'}
+const errors={SCAN_FAILED:'115目录扫描失败，请检查115连接和目录ID。已生成文件保留，修正配置后可重新生成。',OUTPUT_CONFLICT:'部分文件身份或输出路径存在冲突，请检查已有STRM与源文件。',FILE_GENERATION_FAILED:'部分文件生成失败，请检查输出目录权限和挂载。'}
 const refreshing=ref(false), loaded=ref(false)
 const running=computed(()=>status.value?.state==='RUNNING')
 const stateColor=computed(()=>({DONE:'success',PARTIAL:'warning',FAILED:'error',INTERRUPTED:'warning',RUNNING:'primary'}[status.value?.state] || 'secondary'))
@@ -69,7 +69,7 @@ onUnmounted(()=>clearInterval(timer))
   <v-alert v-if="error" type="error" variant="tonal" class="mb-4" role="alert">{{error}}<v-btn v-if="!enabled" variant="text" class="ml-2" :loading="refreshing" @click="refresh">重试读取</v-btn></v-alert>
   <v-alert v-if="notice && tab==='organize'" type="info" variant="tonal" class="mb-4" aria-live="polite">{{notice}}</v-alert>
   <v-progress-linear v-if="!loaded" indeterminate color="primary" aria-label="正在读取插件状态"/>
-  <section v-if="loaded && !enabled" class="p115-section p115-onboarding"><v-icon size="40" color="primary">mdi-folder-play-outline</v-icon><h3>先连接你的115媒体库</h3><p>启用插件，填写Cookie、媒体源目录和输出路径，<br/>再设置Emby可访问的MoviePilot播放地址。</p><v-btn color="primary" class="mt-4" @click="configure">开始配置</v-btn></section>
+  <section v-if="loaded && !enabled" class="p115-section p115-onboarding"><v-icon size="40" color="primary">mdi-folder-play-outline</v-icon><h3>先连接你的115媒体库</h3><p>启用插件，选择115连接方式、媒体源目录和输出路径，<br/>再设置Emby可访问的MoviePilot播放地址。</p><v-btn color="primary" class="mt-4" @click="configure">开始配置</v-btn></section>
   <template v-if="enabled">
     <Storage v-if="tab==='storage'" :api="props.api" :generating="running" @configure="configure"/>
     <section v-if="tab==='strm'" class="p115-section p115-generation">

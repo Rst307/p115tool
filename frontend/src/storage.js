@@ -4,6 +4,7 @@ export function canSubmitShare({working,blocked,attaching=false,pending=0,limit=
   return !working && (attaching ? !blocked : pending<limit)
 }
 export function storageActionMessage(result) {
+  if(result?.state==='COOKIE_MODE_REQUIRED') return '此操作需要在通用连接中切换到 115 Cookie 模式。'
   if(result?.state==='RECORDS_DELETED') return '存储记录已从列表移除，网盘文件、分享和STRM保留，已有临时副本继续按原规则清理。'
   if(result?.state==='SOURCES_REQUIRED') return '请在STRM设置中选择整理后的媒体库源文件夹，再扫描实际资源。'
   if(result?.state==='CONFIG_REQUIRED') return temporaryStorageHint

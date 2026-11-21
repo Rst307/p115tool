@@ -21,7 +21,7 @@ class RecycleCleaner:
     def status(self):
         row=self.pending() or self.service.query('SELECT * FROM recycle_empty_runs ORDER BY updated_at DESC LIMIT 1',one=True)
         cfg=self.storage.config
-        return {'scheduled':cfg.recycle_empty_scheduled,'time':cfg.recycle_empty_time,
+        return {'scheduled':cfg.recycle_empty_scheduled and not cfg.use_moviepilot_auth,'time':cfg.recycle_empty_time,
                 'stage':row['stage'] if row else 'IDLE','done':row['done'] if row else 0,
                 'total':row['total'] if row else 0,'updated_at':row['updated_at'] if row else None,
                 'blocked':bool(row and row['stage'] in ('PURGING','UNKNOWN')),

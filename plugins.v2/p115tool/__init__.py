@@ -22,7 +22,7 @@ class P115Tool(_PluginBase):
     plugin_name='115 工具箱'
     plugin_desc='实际与虚拟存储、分享临时转存、分类STRM及302播放'
     plugin_icon='https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png'
-    plugin_version='0.2.48'
+    plugin_version='0.2.49'
     plugin_author='Rst307'
     author_url='https://github.com/Rst307'
     plugin_config_prefix='p115tool_'
@@ -39,6 +39,7 @@ class P115Tool(_PluginBase):
             previous=self._config
             try:
                 data=dict(config or {})
+                data.setdefault('use_moviepilot_auth', previous.use_moviepilot_auth)
                 data['data_dir']=str(self.get_data_path())
                 data['playback_prefix']='/api/v1/plugin/P115Tool'
                 candidate=Config.from_dict(data)
@@ -80,18 +81,18 @@ class P115Tool(_PluginBase):
         for enabled,time,job_id,name,func in (
             (self._config.scheduled,self._config.scan_time,'p115tool_strm','115分类STRM生成',self.run_generate),
             (self._config.organize_scheduled and bool(self._config.organize_cids),self._config.organize_time,'p115tool_organize','115 MoviePilot定时整理',self.run_organize),
-            (self._config.recycle_empty_scheduled,self._config.recycle_empty_time,'p115tool_recycle_empty','115定时清空回收站',self.run_recycle_empty)):
+            (self._config.recycle_empty_scheduled and not self._config.use_moviepilot_auth,self._config.recycle_empty_time,'p115tool_recycle_empty','115定时清空回收站',self.run_recycle_empty)):
             if enabled:
                 hour,minute=map(int,time.split(':'))
                 jobs.append({'id':job_id,'name':name,'trigger':CronTrigger(hour=hour,minute=minute,timezone='Asia/Shanghai'),'func':func,'kwargs':{}})
-        if self._config.temp_cleanup and self._config.temp_cid:
+        if self._config.temp_cleanup and self._config.temp_cid and not self._config.use_moviepilot_auth:
             jobs.append({'id':'p115tool_temp_cleanup','name':'115临时副本清理',
                          'trigger':CronTrigger(minute=15,timezone='Asia/Shanghai'),
                          'func':self.run_cleanup,'kwargs':{}})
         return jobs
     def run_recycle_empty(self):
         with self._lifecycle:
-            if not self._service or not self._config.enabled or not self._config.recycle_empty_scheduled: return
+            if not self._service or not self._config.enabled or not self._config.recycle_empty_scheduled or self._config.use_moviepilot_auth: return
             try: return self._service.storage.start('empty_recycle')
             except Exception: logger.warning('115定时清空回收站未启动，请检查插件状态。')
     def run_storage_refresh(self):
@@ -101,7 +102,7 @@ class P115Tool(_PluginBase):
                 except Exception: logger.warning('115存储刷新未启动，请检查插件状态。')
     def run_cleanup(self):
         with self._lifecycle:
-            if self._service and self._config.temp_cleanup and self._config.temp_cid:
+            if self._service and self._config.temp_cleanup and self._config.temp_cid and not self._config.use_moviepilot_auth:
                 try: return self._service.storage.start('cleanup')
                 except Exception: logger.warning('115临时副本清理未启动，请检查插件状态。')
     def run_organize(self):

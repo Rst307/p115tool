@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 class Config:
     enabled: bool = False
     cookie: str = ''
+    use_moviepilot_auth: bool = False
     data_dir: str = './data/p115tool'
     strm_dir: str = './strm'
     public_url: str = 'http://localhost:3000'
@@ -38,7 +39,7 @@ class Config:
         if 'source_cids_json' in data:
             data['source_cids'] = json.loads(data.pop('source_cids_json'))
         data = {k:v for k,v in data.items() if k in {f.name for f in fields(cls)}}
-        for k in ('enabled','scheduled','organize_scheduled','auto_after_transfer','temp_cleanup','recycle_purge','recycle_empty_scheduled'):
+        for k in ('enabled','use_moviepilot_auth','scheduled','organize_scheduled','auto_after_transfer','temp_cleanup','recycle_purge','recycle_empty_scheduled'):
             if k in data and type(data[k]) is not bool: raise ValueError('Invalid boolean')
         if 'request_timeout' in data:
             v=data['request_timeout']

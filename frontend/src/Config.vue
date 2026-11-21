@@ -10,7 +10,7 @@ const initial=props.initialConfig
 let sources=initial.source_cids || []
 try { if(initial.source_cids_json) sources=JSON.parse(initial.source_cids_json) } catch {}
 const cloneSources=items=>Array.isArray(items)?items.map(item=>typeof item==='object'?{...item}:item):[]
-const config=ref({enabled:false,cookie:'',strm_dir:'/opt/emby/strm',public_url:'http://localhost:3000',scheduled:false,organize_scheduled:false,organize_time:'02:00',organize_target_cid:'',auto_after_transfer:false,scan_time:'03:00',request_timeout:30,temp_cid:'',temp_days:7,temp_cleanup:true,recycle_purge:false,recycle_password:'',recycle_empty_scheduled:false,recycle_empty_time:'04:00',...Object.fromEntries(['enabled','cookie','strm_dir','public_url','scheduled','organize_scheduled','organize_time','organize_target_cid','auto_after_transfer','scan_time','request_timeout','temp_cid','temp_days','temp_cleanup','recycle_purge','recycle_password','recycle_empty_scheduled','recycle_empty_time'].filter(k=>initial[k]!==undefined).map(k=>[k,initial[k]])),source_cids:cloneSources(sources),organize_cids:cloneSources(initial.organize_cids)})
+const config=ref({enabled:false,cookie:'',use_moviepilot_auth:false,strm_dir:'/opt/emby/strm',public_url:'http://localhost:3000',scheduled:false,organize_scheduled:false,organize_time:'02:00',organize_target_cid:'',auto_after_transfer:false,scan_time:'03:00',request_timeout:30,temp_cid:'',temp_days:7,temp_cleanup:true,recycle_purge:false,recycle_password:'',recycle_empty_scheduled:false,recycle_empty_time:'04:00',...Object.fromEntries(['enabled','cookie','use_moviepilot_auth','strm_dir','public_url','scheduled','organize_scheduled','organize_time','organize_target_cid','auto_after_transfer','scan_time','request_timeout','temp_cid','temp_days','temp_cleanup','recycle_purge','recycle_password','recycle_empty_scheduled','recycle_empty_time'].filter(k=>initial[k]!==undefined).map(k=>[k,initial[k]])),source_cids:cloneSources(sources),organize_cids:cloneSources(initial.organize_cids)})
 const error=ref(''), busy=ref(false), picker=ref(false), folders=ref([]), trail=ref([{cid:'0',name:'115网盘'}]), folderBusy=ref(false)
 const loopbackAddress=computed(()=>{try{return ['localhost','127.0.0.1','[::1]'].includes(new URL(config.value.public_url).hostname)}catch{return false}})
 const groups=[{field:'source_cids',title:'STRM生成源文件夹',hint:'选择整理后的媒体库，如 /emby，用于扫描和生成STRM。'},{field:'organize_cids',title:'MoviePilot待整理文件夹',hint:'选择未整理资源，如 /下载/待整理，用于手动及定时整理。整理后移动到下方指定的STRM媒体库。'}]
@@ -30,7 +30,7 @@ function manual(field) {
 async function browse() {
   folderBusy.value=true;folderError.value='';folders.value=[]
   try { folders.value=(await post(props.api,'data',{kind:'folders',cid:trail.value.at(-1).cid})).items }
-  catch(e) { folderError.value=requestErrorMessage(e,'目录读取失败。请先保存Cookie并启用插件，再重试。') }
+  catch(e) { folderError.value=requestErrorMessage(e,'目录读取失败。请检查115授权、保存连接设置并启用插件。') }
   finally { folderBusy.value=false }
 }
 function open(field) { folderField.value=field;picker.value=true;trail.value=[{cid:'0',name:'115网盘'}];browse() }
@@ -55,6 +55,8 @@ async function save() {
   <v-tabs v-model="tab" color="primary" class="mb-4" aria-label="配置板块"><v-tab value="organize">整理</v-tab><v-tab value="strm">STRM</v-tab><v-tab value="storage">存储</v-tab><v-tab value="connection">通用连接</v-tab></v-tabs>
   <section v-if="tab==='storage'" class="p115-section">
     <h3>实际存储与虚拟存储</h3><p class="p115-note mt-2 mb-4">实际视频长期保留。虚拟资源保留分享和STRM，使用临时转存副本播放，副本到期清理后按需重新转存。</p>
+    <v-alert v-if="config.use_moviepilot_auth" type="info" variant="tonal">虚拟存储、临时副本清理和回收站设置在 Cookie 模式下生效。</v-alert>
+    <template v-else>
     <v-text-field v-model="config.temp_cid" label="115临时副本目录ID" inputmode="numeric" variant="outlined" hint="请选择专用非根目录，插件会为每个资源创建独立子目录。" persistent-hint/>
     <v-btn variant="tonal" class="mt-3 mb-5" prepend-icon="mdi-folder-search-outline" @click="open('temp_cid')">选择临时副本目录</v-btn>
     <v-text-field v-model="config.temp_days" type="number" min="1" max="365" label="临时副本保留天数" variant="outlined" hint="1–365天，默认7天。从转存完成时起算；修改后也适用于已有副本。" persistent-hint/>
@@ -68,21 +70,24 @@ async function save() {
     <v-switch v-model="config.recycle_empty_scheduled" label="每天清空整个115回收站（不可恢复）" color="error" hide-details class="mt-4"/>
     <v-text-field v-model="config.recycle_empty_time" :disabled="!config.recycle_empty_scheduled" type="time" label="每日清空时间" hint="北京时间（Asia/Shanghai），默认04:00。需填写上方六位安全密钥。" persistent-hint variant="outlined" class="mt-4"/>
     <p class="p115-note mt-3">默认关闭，保存后生效。先记录条目快照，再分批永久删除并核实；执行过程中新增的条目留到下次。其他插件存储或STRM任务运行时跳过本次。结果未知时暂停后续清空，仅只读核实，不自动重试删除；可在存储页查看状态。</p>
+    </template>
   </section>
   <div v-if="tab==='connection'" class="p115-section p115-enable">
     <div><h3>启用115工具箱</h3><p>开启后可生成STRM，并提供302直链播放。</p></div>
     <v-switch v-model="config.enabled" aria-label="启用115工具箱" color="primary" hide-details inset/>
   </div>
   <section v-if="tab==='connection'" class="p115-section">
-    <div class="p115-section-heading"><div><h3>115连接</h3><p>首次使用先填写并保存，再浏览网盘目录。</p></div></div>
-    <v-text-field v-model="config.cookie" type="password" label="115 Cookie" autocomplete="off" variant="outlined" density="comfortable" hint="用于连接你的115账号；输入内容默认隐藏。" persistent-hint class="mb-5"/>
+    <div class="p115-section-heading"><div><h3>115连接</h3><p>保存连接方式后即可浏览网盘目录。</p></div></div>
+    <v-switch v-model="config.use_moviepilot_auth" label="使用 MoviePilot 原生 115 授权" color="primary" hide-details class="mb-3"/>
+    <v-alert v-if="config.use_moviepilot_auth" type="info" variant="tonal" class="mb-4">请先在 MoviePilot 的存储设置登录 115。原生授权支持目录扫描、生成 STRM 和实际文件 302 播放。分享、虚拟播放、Telegram 导入和回收站操作需要 Cookie 模式。</v-alert>
+    <v-text-field v-else v-model="config.cookie" type="password" label="115 Cookie" autocomplete="off" variant="outlined" density="comfortable" hint="用于连接你的115账号；输入内容默认隐藏。" persistent-hint class="mb-5"/>
     <v-text-field v-model="config.request_timeout" type="number" min="5" max="120" label="115请求超时（秒）" hint="5–120秒，默认30秒" persistent-hint variant="outlined" density="comfortable"/>
   </section>
   <section v-if="tab==='strm'" class="p115-section">
     <h3 class="mb-4">输出与播放</h3>
     <div class="p115-grid">
       <v-text-field v-model="config.strm_dir" label="本地STRM输出目录" placeholder="/opt/emby/strm" variant="outlined" density="comfortable" hint="MoviePilot容器内的路径，需同时挂载给Emby。" persistent-hint/>
-      <v-text-field v-model="config.public_url" label="MoviePilot播放服务地址" placeholder="http://192.168.1.10:3000" variant="outlined" density="comfortable" hint="填写Emby能访问的MoviePilot地址，不带 /#/plugins。" persistent-hint/>
+      <v-text-field v-model="config.public_url" label="MoviePilot播放服务地址" placeholder="http://moviepilot.example:3000" variant="outlined" density="comfortable" hint="填写Emby能访问的MoviePilot地址，不带 /#/plugins。" persistent-hint/>
     </div>
     <v-alert v-if="loopbackAddress" type="warning" variant="tonal" class="mt-5">当前是回环地址。MoviePilot与Emby在不同Docker容器时，请改为Emby能访问的MoviePilot局域网地址或域名。</v-alert>
     <div class="p115-note mt-5">修改播放地址后，保存配置并重新生成STRM。插件会更新已确认归属的旧播放地址，保留手工修改的文件。</div>
@@ -118,7 +123,7 @@ async function save() {
     <v-alert v-if="config.organize_scheduled && !config.organize_cids.length" type="warning" variant="tonal" class="mt-4">请先添加待整理目录，空列表不会启动定时任务。</v-alert>
     <p class="p115-note mt-4">默认关闭，保存后生效。STRM生成中则跳过当次整理；提交结果未知会关闭定时整理，请核实宿主任务后再开启。整理进度在MoviePilot查看。</p>
   </section>
-  <footer class="p115-savebar"><div aria-live="polite"><strong>{{saved ? '配置已交由MoviePilot保存' : '设置完成后，记得保存'}}</strong><p>{{saved ? '返回对应功能板块即可操作。' : '浏览目录需先保存Cookie并启用插件。'}}</p></div><v-btn color="primary" :loading="busy" :disabled="busy" prepend-icon="mdi-content-save-outline" @click="save">保存配置</v-btn></footer>
+  <footer class="p115-savebar"><div aria-live="polite"><strong>{{saved ? '配置已交由MoviePilot保存' : '设置完成后，记得保存'}}</strong><p>{{saved ? '返回对应功能板块即可操作。' : '浏览目录需先保存连接设置并启用插件。'}}</p></div><v-btn color="primary" :loading="busy" :disabled="busy" prepend-icon="mdi-content-save-outline" @click="save">保存配置</v-btn></footer>
   <v-dialog v-model="picker" max-width="640"><v-card class="p115-ui" :title="folderField === 'temp_cid' ? '选择临时副本目录' : folderField === 'organize_cids' ? '选择待整理目录' : '选择STRM媒体库'"><v-card-text>
     <div class="p115-note p115-path mb-3">{{trail.map(x=>x.name).join(' / ')}}</div>
     <div class="p115-actions mb-3"><v-btn :disabled="trail.length===1 || folderBusy" variant="text" prepend-icon="mdi-arrow-left" @click="back">上一级</v-btn><v-btn :disabled="folderBusy" variant="text" @click="browse">重新读取</v-btn></div>

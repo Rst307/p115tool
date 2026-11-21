@@ -246,7 +246,8 @@ class StorageManager:
             item['expires_at']=(item.pop('received_at') or 0)+self.config.temp_days*86400 if item['copy_state']=='READY' else None
         purge_pending,purge_total=self.purge_diagnostics()
         return {'items':items,'total':total,'page':page,'job':self.job(),'busy':self.busy,
-                'temp_days':self.config.temp_days,'cleanup_enabled':self.config.temp_cleanup,
+                'use_moviepilot_auth':self.config.use_moviepilot_auth,
+                'temp_days':self.config.temp_days,'cleanup_enabled':self.config.temp_cleanup and not self.config.use_moviepilot_auth,
                 'recycle_purge_enabled':self.config.recycle_purge,
                 'recycle_key_configured':bool(self.config.recycle_password),
                 'recycle_purge_blocked':bool(purge_total),
@@ -334,7 +335,10 @@ class StorageManager:
                 self._refresh_pending=False; self.start('scan')
 
     def inventory_scope(self):
-        return json.dumps([sorted(s['cid'] for s in self.config.source_cids),self.config.temp_cid])
+        scope = [sorted(s['cid'] for s in self.config.source_cids), self.config.temp_cid]
+        if self.config.use_moviepilot_auth:
+            scope.append('moviepilot')
+        return json.dumps(scope)
 
     def inventory_recent(self):
         snapshot=self.service.query('SELECT * FROM actual_inventory_state WHERE id=1',one=True)
@@ -429,6 +433,8 @@ class StorageManager:
             if payload: raise ValueError('Invalid cleanup')
             args=()
         else: raise ValueError('Unknown storage action')
+        if self.config.use_moviepilot_auth and action != 'scan':
+            return {'state': 'COOKIE_MODE_REQUIRED'}
         if action in ('virtualize','virtualize_all') and args[1] and not self.config.recycle_password:
             return {'state':'RECYCLE_KEY_REQUIRED'}
         with self.service._lock:
@@ -964,6 +970,11 @@ class StorageManager:
     def play(self, media_id, ua):
         if self.service._stop.is_set(): raise ToolError('Service stopped')
         row=self.row(media_id)
+        if self.config.use_moviepilot_auth:
+            if row and (row['kind'] != 'ACTUAL' or row['stage'] in ('SOURCE_DELETE_UNKNOWN', 'SOURCE_DELETING')):
+                raise SafetyError('This operation requires 115 Cookie mode')
+            source = row or self.service.query('SELECT pickcode FROM strm_files WHERE file_id=?', (media_id,), one=True)
+            return self.client.normal_link(source['pickcode'], ua, file_id=media_id).url
         if not row:
             source=self.service.query('SELECT * FROM strm_files WHERE file_id=?',(media_id,),one=True)
             return self.client.normal_link(source['pickcode'],ua).url
@@ -1097,6 +1108,8 @@ class StorageManager:
     def attach_share(self, media_id, link, password):
         if not isinstance(media_id,str) or len(media_id)>128: raise ValueError('Invalid media')
         code,password=parse_share(link,password)
+        if self.config.use_moviepilot_auth:
+            return {'state': 'COOKIE_MODE_REQUIRED'}
         with self._gate:
             row=self.row(media_id)
             if not row or row['stage']!='SHARE_CREATE_UNKNOWN': raise ValueError('No unknown share creation')

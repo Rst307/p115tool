@@ -5,6 +5,7 @@ let nextId=0;
 
 const labels = {
   DISABLED:'订阅已关闭', CONNECTING:'正在连接', LOGIN_REQUIRED:'请登录 Telegram 账号',
+  COOKIE_MODE_REQUIRED:'导入已暂停，请在通用连接中切换到 115 Cookie 模式',
   CODE_SENT:'验证码已发送，请在 Telegram 或短信中查看', CODE_COOLDOWN:'请等待60秒后再发送验证码',
   PASSWORD_REQUIRED:'此账号开启了二步验证，请填写密码后登录', AUTHORIZED:'登录成功',
   ALREADY_AUTHORIZED:'账号会话已登录，无需重新发送验证码',

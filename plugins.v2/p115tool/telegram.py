@@ -154,10 +154,13 @@ class TelegramMonitor:
             except Exception: self._error = 'CONFIG_INVALID'
         self._network = self._network_unknown()
         if self.settings['enabled']:
-            self._state = 'CONNECTING'
-            try: self._ensure_thread()
-            except ToolError:
-                self._state = self._error = 'TELEGRAM_UNAVAILABLE'
+            if service.config.use_moviepilot_auth:
+                self._state = 'COOKIE_MODE_REQUIRED'
+            else:
+                self._state = 'CONNECTING'
+                try: self._ensure_thread()
+                except ToolError:
+                    self._state = self._error = 'TELEGRAM_UNAVAILABLE'
 
     def _validate(self, data, preserve=True):
         if not isinstance(data, dict) or set(data) - set(DEFAULTS) - {'clear_proxy'}:
@@ -368,6 +371,8 @@ class TelegramMonitor:
         with self._guard:
             self.settings = candidate; self._error = None; self._next_poll = 0
             self._state = 'CONNECTING' if candidate['enabled'] else 'DISABLED'
+            if candidate['enabled'] and self.service.config.use_moviepilot_auth:
+                self._state = 'COOKIE_MODE_REQUIRED'
             self._channels = []
             if changed:
                 if self._network_future: self._network_future.cancel()
@@ -470,9 +475,10 @@ class TelegramMonitor:
     async def _poll_loop(self):
         while True:
             try:
-                if self.settings['enabled'] and time.time() >= self._network_next:
+                enabled = self.settings['enabled'] and not self.service.config.use_moviepilot_auth
+                if enabled and time.time() >= self._network_next:
                     self.check_network()
-                if self.settings['enabled'] and time.time() >= max(self._next_poll, self._rate_until):
+                if enabled and time.time() >= max(self._next_poll, self._rate_until):
                     async with self._op:
                         # Bound a tick without losing committed message cursors.
                         await asyncio.wait_for(self._poll(), 120)
@@ -481,6 +487,8 @@ class TelegramMonitor:
             await asyncio.sleep(1)
 
     def poll_now(self):
+        if self.service.config.use_moviepilot_auth:
+            return {'state': 'COOKIE_MODE_REQUIRED'}
         self._ensure_thread()
         def wake():
             # Respect upstream FloodWait and avoid concurrent repeated clicks.
@@ -663,12 +671,16 @@ class TelegramMonitor:
 
     def retry(self, entry_id):
         if type(entry_id) is not int or entry_id <= 0: raise ValueError('Invalid Telegram import')
+        if self.service.config.use_moviepilot_auth:
+            return {'state': 'COOKIE_MODE_REQUIRED'}
         return self._submit(self._retry, entry_id)
 
     async def _retry(self, entry_id):
         return self._queue_retries(entry_id)
 
     def retry_all(self):
+        if self.service.config.use_moviepilot_auth:
+            return {'state': 'COOKIE_MODE_REQUIRED'}
         return self._submit(self._retry_all)
 
     async def _retry_all(self):
