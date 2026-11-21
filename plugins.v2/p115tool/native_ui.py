@@ -2,6 +2,7 @@ from importlib import import_module
 import json
 import re
 from fastapi import Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 from .config import Config
 from .models import ToolError
@@ -18,11 +19,14 @@ def decode(raw):
     return value
 
 def dispatch(plugin,route,payload):
+    if route=='cookie_qr':
+        return plugin._qr.dispatch(payload)
     with plugin._lifecycle:
         if route=='validate':
             if set(payload)!={'config'}: raise ValueError('Invalid config envelope')
             if not isinstance(payload['config'], dict): raise ValueError('Invalid config')
             candidate = {**payload['config']}
+            candidate.setdefault('cookie', plugin._config.cookie)
             candidate.setdefault('use_moviepilot_auth', plugin._config.use_moviepilot_auth)
             candidate.setdefault('cookie_auto_refresh', plugin._config.cookie_auto_refresh)
             candidate.setdefault('cookie_renewal_seed', plugin._config.cookie_renewal_seed)
@@ -112,10 +116,13 @@ def routes(plugin):
                     raw.extend(chunk)
                     if len(raw)>65536: raise HTTPException(413,'Request too large')
                 payload=decode(raw)
-                return await run_in_threadpool(dispatch,plugin,route,payload)
+                result = await run_in_threadpool(dispatch,plugin,route,payload)
+                if route=='cookie_qr':
+                    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+                return result
             except HTTPException: raise
             except (ValueError,TypeError): raise HTTPException(422,'Invalid plugin request') from None
             except ToolError: raise HTTPException(503,'Plugin unavailable') from None
             except Exception: raise HTTPException(500,'Plugin request failed') from None
         return handler
-    return [{'path':'/native/'+r,'endpoint':endpoint(r),'methods':['POST'],'allow_anonymous':False,'auth':'bear','dependencies':[Depends(administrator)]} for r in ('data','action','validate')]
+    return [{'path':'/native/'+r,'endpoint':endpoint(r),'methods':['POST'],'allow_anonymous':False,'auth':'bear','dependencies':[Depends(administrator)]} for r in ('data','action','validate','cookie_qr')]

@@ -14,6 +14,14 @@ OPEN_READ_METHODS = {
 }
 COOKIE_RETRY_READS = frozenset(OPEN_READ_METHODS) | {'share_snap', 'share_download_url', 'recyclebin_list'}
 COOKIE_RENEWAL_COOLDOWN = 1800
+QR_PRIMARY = ('qandroid', 'M1')
+QR_BACKUP = ('alipaymini', 'R2')
+
+
+def qr_data(response):
+    if isinstance(response, dict) and 'state' not in response and response_code(response) == 0:
+        return response['data']
+    return check_response(response)['data']
 
 def response_code(response):
     if not isinstance(response,dict): return None
@@ -116,6 +124,60 @@ class P115ClientManager:
 
         return sdk.login_status(parse=parse, timeout=10, follow_redirects=False)
 
+    @classmethod
+    def _verify_issued_cookie(cls, response, device, user_id=None):
+        issued = qr_data(response)['cookie']
+        if not isinstance(issued, (dict, str)) or not issued:
+            raise ValueError('Invalid 115 Cookie')
+        sdk = cls._new_cookie_client(issued)
+        cookie = str(sdk.cookies_str)
+        identity = cookie_identity(cookie)
+        if (not identity or identity[1] != device or (user_id is not None and identity[0] != user_id)
+                or cls._login_status(sdk) is not True):
+            raise ValueError('Unverified 115 Cookie')
+        return sdk, cookie, identity[0]
+
+    @staticmethod
+    def start_cookie_qr():
+        from p115client import P115Client
+
+        data = qr_data(P115Client.login_qrcode_token(timeout=8, follow_redirects=False))
+        uid, stamp, sign = data['uid'], data['time'], data['sign']
+        if (not isinstance(uid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', uid)
+                or not re.fullmatch(r'[0-9]{1,16}', str(stamp))
+                or not isinstance(sign, str) or not 1 <= len(sign) <= 256):
+            raise ValueError('Invalid 115 QR challenge')
+        image = P115Client.login_qrcode(uid, timeout=8, follow_redirects=False)
+        if not isinstance(image, bytes) or not image.startswith(b'\x89PNG\r\n\x1a\n') or len(image) > 1024 * 1024:
+            raise ValueError('Invalid 115 QR image')
+        return {'uid': uid, 'time': stamp, 'sign': sign}, image
+
+    @staticmethod
+    def cookie_qr_status(challenge):
+        from p115client import P115Client
+
+        status = qr_data(P115Client.login_qrcode_scan_status(challenge, timeout=6, follow_redirects=False))['status']
+        if type(status) is not int or status not in (-2, -1, 0, 1, 2):
+            raise ValueError('Invalid 115 QR status')
+        return status
+
+    @classmethod
+    def finish_cookie_qr(cls, challenge, expected_user=None):
+        from p115client import P115Client
+
+        app, device = QR_PRIMARY
+        response = P115Client.login_qrcode_scan_result(challenge['uid'], app=app, timeout=10, follow_redirects=False)
+        primary, cookie, user_id = cls._verify_issued_cookie(response, device)
+        if expected_user is not None and user_id != expected_user:
+            return '', ''
+        app, device = QR_BACKUP
+        try:
+            response = primary.login_with_app(app, timeout=10, follow_redirects=False)
+            _, backup, _ = cls._verify_issued_cookie(response, device, user_id)
+        except Exception:
+            backup = ''
+        return cookie, backup
+
     def _check_cookie_locked(self):
         if self._closed or self.config.use_moviepilot_auth or not self.config.cookie_auto_refresh:
             return False
@@ -162,15 +224,8 @@ class P115ClientManager:
             renewal.state = 'PERSISTENCE_FAILED'
             return False
         try:
-            result = check_response(seed.login_with_app(device, timeout=10, follow_redirects=False))
-            issued = result['data']['cookie']
-            if not isinstance(issued, (dict, str)) or not issued:
-                raise ValueError('Invalid 115 Cookie')
-            updated = self._new_cookie_client(issued)
-            cookie = str(updated.cookies_str)
-            if cookie_identity(cookie) != primary or self._login_status(updated) is not True:
-                renewal.state = 'RENEWAL_FAILED'
-                return False
+            result = seed.login_with_app(device, timeout=10, follow_redirects=False)
+            updated, cookie, _ = self._verify_issued_cookie(result, primary[1], primary[0])
         except Exception:
             renewal.state = 'RENEWAL_FAILED'
             return False

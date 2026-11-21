@@ -3,6 +3,7 @@ from pathlib import Path
 import logging
 import threading
 from .config import Config
+from .cookie_qr import CookieQrLogin
 from .service import Service
 try:
     from app.plugins import _PluginBase
@@ -22,7 +23,7 @@ class P115Tool(_PluginBase):
     plugin_name='115 工具箱'
     plugin_desc='实际与虚拟存储、分享临时转存、分类STRM及302播放'
     plugin_icon='https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png'
-    plugin_version='0.2.51'
+    plugin_version='0.2.52'
     plugin_author='Rst307'
     author_url='https://github.com/Rst307'
     plugin_config_prefix='p115tool_'
@@ -33,12 +34,14 @@ class P115Tool(_PluginBase):
         super().__init__()
         self._config=Config(); self._service=None
         self._lifecycle=threading.RLock(); self._initialization_error=None
+        self._qr=CookieQrLogin(self); self._qr_allowed=True
 
     def init_plugin(self,config=None):
         with self._lifecycle:
             previous=self._config
             try:
                 data=dict(config or {})
+                data.setdefault('cookie', previous.cookie)
                 data.setdefault('use_moviepilot_auth', previous.use_moviepilot_auth)
                 data.setdefault('cookie_auto_refresh', previous.cookie_auto_refresh)
                 data.setdefault('cookie_renewal_seed', previous.cookie_renewal_seed)
@@ -52,7 +55,8 @@ class P115Tool(_PluginBase):
             service=None
             try:
                 if candidate.enabled: service=Service(candidate)
-                self.update_config(asdict(candidate))
+                if self.update_config(asdict(candidate)) is False:
+                    raise OSError('Plugin configuration could not be saved')
                 self._config=candidate; self._service=service; self._initialization_error=None
             except Exception:
                 if service: service.close()
@@ -62,6 +66,32 @@ class P115Tool(_PluginBase):
                     self.update_config(asdict(previous))
                     if previous.enabled: self._service=Service(previous)
                 except Exception: self._service=None
+            finally:
+                self._qr_allowed=True
+
+    def _qr_config(self):
+        with self._lifecycle:
+            return self._config if self._qr_allowed else None
+
+    def _save_qr_cookies(self, expected, primary, backup):
+        with self._lifecycle:
+            if not self._qr_allowed or self._config is not expected:
+                return {'state': 'CONFIG_CHANGED'}
+            settings=asdict(expected)
+            settings.update(cookie=primary, cookie_renewal_seed=backup, cookie_auto_refresh=bool(backup))
+            self.init_plugin(settings)
+            if self._config is expected:
+                return {'state': 'SAVE_FAILED'}
+            result={'state': 'SAVED' if backup else 'PRIMARY_ONLY'}
+            if self.get_state() and not expected.use_moviepilot_auth:
+                try:
+                    from app.scheduler import Scheduler
+                    Scheduler().update_plugin_job(type(self).__name__)
+                except ModuleNotFoundError as exc:
+                    if exc.name != 'app': result['schedule_updated']=False
+                except Exception:
+                    result['schedule_updated']=False
+            return result
 
     def get_state(self): return bool(self._service and self._config.enabled)
     @staticmethod
@@ -161,9 +191,11 @@ class P115Tool(_PluginBase):
                 logger.warning('115整理后自动生成未启动，请检查STRM源目录配置。')
     def stop_service(self):
         with self._lifecycle:
+            self._qr_allowed=False
             if self._service: self._service.close(); self._service=None
     def get_form(self):
         data=asdict(self._config)
+        data['cookie_set'] = bool(data.pop('cookie'))
         data['cookie_renewal_seed_set'] = bool(data.pop('cookie_renewal_seed'))
         return [{'component':'VAlert','props':{'type':'info'},'text':'配置115源文件夹、STRM输出目录和播放地址，然后在详情页生成STRM。'}],data
     def get_page(self):

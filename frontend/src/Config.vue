@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { post, saveConfiguration, requestErrorMessage } from './host'
 import { configurationSection } from './navigation'
 import './ui.css'
@@ -10,8 +10,9 @@ const initial=props.initialConfig
 let sources=initial.source_cids || []
 try { if(initial.source_cids_json) sources=JSON.parse(initial.source_cids_json) } catch {}
 const cloneSources=items=>Array.isArray(items)?items.map(item=>typeof item==='object'?{...item}:item):[]
-const config=ref({enabled:false,cookie:'',use_moviepilot_auth:false,strm_dir:'/opt/emby/strm',public_url:'http://localhost:3000',scheduled:false,organize_scheduled:false,organize_time:'02:00',organize_target_cid:'',auto_after_transfer:false,scan_time:'03:00',request_timeout:30,temp_cid:'',temp_days:7,temp_cleanup:true,recycle_purge:false,recycle_password:'',recycle_empty_scheduled:false,recycle_empty_time:'04:00',...Object.fromEntries(['enabled','cookie','use_moviepilot_auth','strm_dir','public_url','scheduled','organize_scheduled','organize_time','organize_target_cid','auto_after_transfer','scan_time','request_timeout','temp_cid','temp_days','temp_cleanup','recycle_purge','recycle_password','recycle_empty_scheduled','recycle_empty_time'].filter(k=>initial[k]!==undefined).map(k=>[k,initial[k]])),source_cids:cloneSources(sources),organize_cids:cloneSources(initial.organize_cids)})
+const config=ref({enabled:false,use_moviepilot_auth:false,strm_dir:'/opt/emby/strm',public_url:'http://localhost:3000',scheduled:false,organize_scheduled:false,organize_time:'02:00',organize_target_cid:'',auto_after_transfer:false,scan_time:'03:00',request_timeout:30,temp_cid:'',temp_days:7,temp_cleanup:true,recycle_purge:false,recycle_password:'',recycle_empty_scheduled:false,recycle_empty_time:'04:00',...Object.fromEntries(['enabled','use_moviepilot_auth','strm_dir','public_url','scheduled','organize_scheduled','organize_time','organize_target_cid','auto_after_transfer','scan_time','request_timeout','temp_cid','temp_days','temp_cleanup','recycle_purge','recycle_password','recycle_empty_scheduled','recycle_empty_time'].filter(k=>initial[k]!==undefined).map(k=>[k,initial[k]])),source_cids:cloneSources(sources),organize_cids:cloneSources(initial.organize_cids)})
 config.value.cookie_auto_refresh = initial.cookie_auto_refresh === true
+const cookieDraft=ref(''), cookieChanged=ref(false), cookieSaved=ref(Boolean(initial.cookie_set || initial.cookie))
 const renewalSeed=ref(''), renewalSeedChanged=ref(false), seedSaved=ref(initial.cookie_renewal_seed_set===true)
 const renewalStatus=ref(null)
 const renewalLabels={UNCHECKED:'等待首次检查',VALID:'主 Cookie 有效',RENEWED:'已自动续登',
@@ -30,6 +31,78 @@ const folderField=ref('source_cids')
 const cid=ref({source_cids:'',organize_cids:''}), prefix=ref({source_cids:'/',organize_cids:'/'})
 const manualOpen=ref({source_cids:false,organize_cids:false}), folderError=ref(''), saved=ref(false)
 watch(config,()=>{saved.value=false},{deep:true,flush:'sync'})
+const scanOpen=ref(false), scanState=ref(''), scanImage=ref(''), scanMessage=ref('')
+const scanFinished=computed(()=>['SAVED','PRIMARY_ONLY'].includes(scanState.value))
+const scanPending=['STARTING','WAITING','SCANNED','POLL_UNAVAILABLE']
+const scanLabels={
+  STARTING:'正在获取二维码…', WAITING:'使用手机上的 115 App 扫码。', SCANNED:'已扫码，请在手机上确认登录。',
+  POLL_UNAVAILABLE:'暂时无法读取扫码状态，正在重试…', BUSY:'已有扫码正在等待或处理，请稍后重试。',
+  EXPIRED:'二维码已过期，请重新获取。', CANCELED:'本次扫码已取消。',
+  CONFIG_CHANGED:'插件设置已变更，请重新打开设置后扫码。',
+  ACCOUNT_MISMATCH:'扫码账号与插件当前已配置的 115 账号不同。',
+  QR_UNAVAILABLE:'二维码获取失败，请检查 MoviePilot 与 115 的网络连接后重试。',
+  LOGIN_FAILED:'115 登录结果未通过验证，请重新扫码。', SAVE_FAILED:'Cookie 保存失败，请检查插件配置和数据目录。',
+  SAVED:'主 Cookie 和备用 Cookie 已保存，自动更新已开启。',
+  PRIMARY_ONLY:'主 Cookie 已保存。115 未发放可验证的备用会话，自动更新暂未开启。'
+}
+let scanGeneration=0, scanId='', scanTimer, scanDeadline=0
+function cancelScan(id) {
+  if(id)post(props.api,'cookie_qr',{action:'cancel',scan_id:id}).catch(()=>{})
+}
+function closeScan() {
+  scanGeneration+=1
+  clearTimeout(scanTimer)
+  if(!scanFinished.value && scanPending.includes(scanState.value))cancelScan(scanId)
+  scanId='';scanImage.value='';scanOpen.value=false
+}
+onBeforeUnmount(closeScan)
+async function startScan() {
+  closeScan()
+  const generation=scanGeneration
+  scanOpen.value=true;scanState.value='STARTING';scanMessage.value=''
+  try {
+    const result=await post(props.api,'cookie_qr',{action:'start'})
+    if(generation!==scanGeneration) { cancelScan(result.scan_id);return }
+    scanState.value=result.state;scanImage.value=result.image || '';scanId=result.scan_id || ''
+    if(scanId) {
+      scanDeadline=Date.now()+180000
+      scanTimer=setTimeout(()=>pollScan(generation),800)
+    }
+  } catch(e) {
+    if(generation!==scanGeneration)return
+    scanState.value='QR_UNAVAILABLE';scanMessage.value=requestErrorMessage(e,scanLabels.QR_UNAVAILABLE)
+  }
+}
+async function pollScan(generation) {
+  let result
+  try { result=await post(props.api,'cookie_qr',{action:'poll',scan_id:scanId}) }
+  catch(e) {
+    if(e.status===401 || e.status===403 || e.status===404) {
+      if(generation!==scanGeneration)return
+      cancelScan(scanId)
+      scanMessage.value=requestErrorMessage(e,scanLabels.QR_UNAVAILABLE)
+      result={state:'QR_UNAVAILABLE'}
+    } else {
+      result={state:'POLL_UNAVAILABLE'}
+    }
+  }
+  if(generation!==scanGeneration)return
+  if(result.state!=='BUSY')scanState.value=result.state
+  if(scanPending.includes(scanState.value)) {
+    if(Date.now()<scanDeadline) {
+      scanTimer=setTimeout(()=>pollScan(generation),1600)
+      return
+    }
+    cancelScan(scanId);scanState.value='EXPIRED'
+  }
+  scanImage.value=''
+  if(!scanFinished.value)return
+  cookieSaved.value=true;cookieDraft.value='';cookieChanged.value=false
+  seedSaved.value=result.state==='SAVED';renewalSeed.value='';renewalSeedChanged.value=false
+  config.value.cookie_auto_refresh=seedSaved.value;renewalStatus.value=null
+  if(config.value.use_moviepilot_auth)scanMessage.value='要使用分享导入和新转存，请关闭 MoviePilot 原生授权开关并保存配置。'
+  if(result.schedule_updated===false)scanMessage.value='定时任务刷新失败，请重新保存配置。'
+}
 function add(source,field) { if (!config.value[field].some(x=>String(x.cid ?? x)===source.cid)) config.value[field].push(source) }
 function manual(field) {
   error.value='';saved.value=false
@@ -53,10 +126,12 @@ async function save() {
   busy.value=true;error.value='';saved.value=false
   try {
     const payload={...config.value}
+    if(cookieChanged.value)payload.cookie=cookieDraft.value.trim()
     if(renewalSeedChanged.value)payload.cookie_renewal_seed=renewalSeed.value.trim()
     await saveConfiguration(props.api,payload,v=>emit('save',v))
+    if(cookieChanged.value)cookieSaved.value=Boolean(payload.cookie)
     if(renewalSeedChanged.value)seedSaved.value=Boolean(payload.cookie_renewal_seed)
-    renewalSeed.value='';renewalSeedChanged.value=false;saved.value=true
+    cookieDraft.value='';cookieChanged.value=false;renewalSeed.value='';renewalSeedChanged.value=false;saved.value=true
   }
   catch(e) {
     error.value=requestErrorMessage(e,'配置无效，请检查目录ID、路径和播放地址。')
@@ -100,8 +175,12 @@ async function save() {
     <div class="p115-section-heading"><div><h3>115连接</h3><p>保存连接方式后即可浏览网盘目录。</p></div></div>
     <v-switch v-model="config.use_moviepilot_auth" label="使用 MoviePilot 原生 115 授权" color="primary" hide-details class="mb-3"/>
     <v-alert v-if="config.use_moviepilot_auth" type="info" variant="tonal" class="mb-4">请先在 MoviePilot 的存储设置登录 115。原生授权支持目录扫描、生成 STRM，以及实际文件和已核实临时副本的播放。分享导入、新转存、Telegram 导入和回收站操作使用 Cookie 模式。</v-alert>
-    <v-text-field v-else v-model="config.cookie" type="password" label="115 Cookie" autocomplete="off" variant="outlined" density="comfortable" hint="用于连接你的115账号；输入内容默认隐藏。" persistent-hint class="mb-5"/>
+    <v-btn variant="tonal" color="primary" class="mb-4" prepend-icon="mdi-qrcode-scan" @click="startScan">扫码配置 Cookie</v-btn>
     <template v-if="!config.use_moviepilot_auth">
+      <v-text-field v-model="cookieDraft" type="password" label="115 Cookie" autocomplete="off" variant="outlined" density="comfortable"
+        :hint="cookieChanged && !cookieDraft ? '保存后清除已保存的 Cookie。' : cookieSaved ? '已保存主 Cookie，留空保留。' : '也可以手动填写主 Cookie。'" persistent-hint class="mb-3"
+        @update:model-value="cookieChanged=true;saved=false"/>
+      <v-btn v-if="cookieSaved && !cookieChanged" variant="text" class="mb-3" @click="cookieDraft='';cookieChanged=true;config.cookie_auto_refresh=false;saved=false">清除已保存的主 Cookie</v-btn>
       <v-switch v-model="config.cookie_auto_refresh" label="自动更新 115 Cookie" color="primary" hide-details class="mb-3"/>
       <template v-if="config.cookie_auto_refresh">
         <v-text-field v-model="renewalSeed" type="password" label="备用 115 Cookie" autocomplete="off" variant="outlined" density="comfortable"
@@ -155,6 +234,21 @@ async function save() {
     <p class="p115-note mt-4">默认关闭，保存后生效。STRM生成中则跳过当次整理；提交结果未知会关闭定时整理，请核实宿主任务后再开启。整理进度在MoviePilot查看。</p>
   </section>
   <footer class="p115-savebar"><div aria-live="polite"><strong>{{saved ? '配置已交由MoviePilot保存' : '设置完成后，记得保存'}}</strong><p>{{saved ? '返回对应功能板块即可操作。' : '浏览目录需先保存连接设置并启用插件。'}}</p></div><v-btn color="primary" :loading="busy" :disabled="busy" prepend-icon="mdi-content-save-outline" @click="save">保存配置</v-btn></footer>
+  <v-dialog :model-value="scanOpen" max-width="420" @update:model-value="value=>{if(!value)closeScan()}">
+    <v-card class="p115-ui" title="115 扫码登录">
+      <v-card-text>
+        <p role="status" aria-live="polite">{{scanLabels[scanState]}}</p>
+        <img v-if="scanImage" :src="scanImage" alt="115 登录二维码" width="208" height="208" class="d-block mx-auto my-4"/>
+        <p v-if="scanImage" class="p115-note">确认后会保存主 Cookie 并尝试生成备用会话。同类型设备的其他登录可能受影响。</p>
+        <p v-if="scanMessage" class="p115-note mt-3">{{scanMessage}}</p>
+      </v-card-text>
+      <v-card-actions>
+        <v-spacer/>
+        <v-btn v-if="!scanFinished && !scanPending.includes(scanState)" color="primary" @click="startScan">重新获取</v-btn>
+        <v-btn @click="closeScan">{{scanPending.includes(scanState) ? '取消' : '关闭'}}</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
   <v-dialog v-model="picker" max-width="640"><v-card class="p115-ui" :title="folderField === 'temp_cid' ? '选择临时副本目录' : folderField === 'organize_cids' ? '选择待整理目录' : '选择STRM媒体库'"><v-card-text>
     <div class="p115-note p115-path mb-3">{{trail.map(x=>x.name).join(' / ')}}</div>
     <div class="p115-actions mb-3"><v-btn :disabled="trail.length===1 || folderBusy" variant="text" prepend-icon="mdi-arrow-left" @click="back">上一级</v-btn><v-btn :disabled="folderBusy" variant="text" @click="browse">重新读取</v-btn></div>
