@@ -1,6 +1,14 @@
 # 当前插件范围与验证
 
-更新时间：2026-11-21（Asia/Shanghai），版本0.2.59。
+更新时间：2026-11-21（Asia/Shanghai），版本0.2.60。
+
+## 0.2.60 修复本地 STRM 地址更新对旧版内网地址与过期记录的输出冲突
+
+- **旧版无摘要 STRM 兼容升级**（`p115tool/service.py`）：当 `strm_output_proofs` 无记录且 `strm_files.strm_path` 匹配目标文件时，只要文件内容严格为单行 `http(s)` 播放地址且路径精确匹配 `{playback_prefix}/play/{token}`（无 query/fragment/凭据），允许升级为新 `public_url` 并补写输出摘要；已有摘要的手工修改文件仍严格保留不覆盖。
+- **跳过已被替代的过期索引记录**：在 `refresh_addresses()` 中若目标 `.strm` 已由另一 `file_id` 拥有（无论按 `strm_output_proofs` 还是磁盘内播放 `token` 归属判断），跳过过期记录不再误报 `OUTPUT_CONFLICT`。
+- **脱敏汇总日志**：地址刷新完成后通过宿主 `app.log.logger` 输出总数、成功、失败、跳过与失败原因分类统计，不含路径、token 或 URL。
+
+验证：新增旧版内网 IP 升级与过期记录跳过测试；[test_strm_address.py](file:///d:/ImportantFileFolder/emby/mp/plugins/p115Tool/tests/test_strm_address.py) 与 `test_native_package` 共 14 项定向测试全部通过，未运行真实媒体联调。
 
 ## 0.2.59 新增「仅更新播放地址」纯本地 STRM 刷新
 

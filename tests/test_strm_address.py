@@ -160,3 +160,22 @@ class AddressTests(unittest.TestCase):
         self.assertEqual(final['failed'], 1)
         self.assertEqual(final['error'], 'OUTPUT_CONFLICT')
         self.assertEqual(self.path.read_text('utf-8'), edited)
+
+    def test_local_address_refresh_upgrades_legacy_lan_ip_and_skips_superseded_record(self):
+        # Simulate an older STRM written with a LAN IP before strm_output_proofs existed.
+        lan_url = self.old.replace('http://127.0.0.1:8000', 'http://192.168.1.50:3000')
+        self.path.write_text(lan_url, 'utf-8')
+        self.service.query('DELETE FROM strm_output_proofs')
+        # Add an older superseded strm_files row pointing at the same strm_path.
+        self.service.query(
+            "INSERT INTO strm_files VALUES('old1','oldtoken_1234567890123456789','pc0','episode.mkv',10,'OLD','10','电视剧/欧美剧/episode.mkv',?)",
+            (str(self.path),),
+        )
+        self.config.public_url = 'https://emby.example.com:8443'
+        self.service.refresh_addresses()
+        snap = self.service.snapshot()
+        self.assertEqual(snap['state'], 'DONE')
+        self.assertEqual(snap['generated'], 1)
+        self.assertEqual(snap['skipped'], 1)
+        self.assertEqual(snap['failed'], 0)
+        self.assertEqual(self.path.read_text('utf-8'), self.old.replace('http://127.0.0.1:8000', 'https://emby.example.com:8443'))

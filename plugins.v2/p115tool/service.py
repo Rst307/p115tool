@@ -6,7 +6,11 @@ import secrets
 import sqlite3
 import threading
 import hashlib
-import logging
+try:
+    from app.log import logger
+except ModuleNotFoundError:
+    import logging
+    logger = logging.getLogger('p115tool')
 import time
 from urllib.parse import urlsplit
 from .client import P115ClientManager
@@ -166,6 +170,7 @@ class Service:
             if now-last_progress>=1:
                 self._save_state(state)
                 last_progress=now
+        reasons={}
         try:
             rows=self.query(
                 "SELECT f.file_id, f.token, f.relative_path, f.strm_path FROM strm_files f "
@@ -173,6 +178,8 @@ class Service:
                 "AND NOT EXISTS (SELECT 1 FROM virtual_editions e WHERE e.media_id=f.file_id AND e.stable_id!=e.media_id) "
                 "AND NOT EXISTS (SELECT 1 FROM removed_storage_records r WHERE r.media_id=f.file_id)"
             )
+            token_owners={r['token']: r['file_id'] for r in rows}
+            play_prefix=self.config.playback_prefix+'/play/'
             for row in rows:
                 if self._stop.is_set(): raise InterruptedError()
                 state['found']+=1
@@ -187,12 +194,32 @@ class Service:
                         state['skipped']+=1
                         save_progress()
                         continue
+                    proof=self.query('SELECT file_id FROM strm_output_proofs WHERE path=?',(str(resolved),),one=True)
+                    if proof and proof['file_id']!=row['file_id']:
+                        state['skipped']+=1
+                        save_progress()
+                        continue
+                    if proof is None:
+                        try:
+                            raw_line=resolved.read_text('utf-8').replace('\r\n','\n').rstrip('\n')
+                            parsed_path=urlsplit(raw_line).path
+                            if parsed_path.startswith(play_prefix):
+                                disk_token=parsed_path[len(play_prefix):]
+                                owner=token_owners.get(disk_token)
+                                if owner and owner!=row['file_id']:
+                                    state['skipped']+=1
+                                    save_progress()
+                                    continue
+                        except (OSError,UnicodeError,ValueError):
+                            pass
                     rel=resolved.relative_to(self.strm.root).as_posix()[:-5]
                     self.write_output(row['file_id'], rel, row['token'])
                     state['generated']+=1
                 except Exception as exc:
                     state['failed']+=1
                     state['error']='OUTPUT_CONFLICT' if isinstance(exc,SafetyError) else 'FILE_GENERATION_FAILED'
+                    key=exc.args[0] if isinstance(exc,ToolError) and exc.args and isinstance(exc.args[0],str) else type(exc).__name__
+                    reasons[key]=reasons.get(key,0)+1
                 save_progress()
             state['state']='DONE' if not state['failed'] else 'PARTIAL'
         except InterruptedError:
@@ -201,6 +228,10 @@ class Service:
             state['state']='FAILED'
             state['error']='ADDRESS_REFRESH_FAILED'
         self._save_state(state)
+        logger.info(
+            f"115本地STRM地址更新结束：状态={state['state']}，检查={state['found']}，成功={state['generated']}，"
+            f"失败={state['failed']}，跳过={state['skipped']}，失败分类={reasons or '无'}"
+        )
 
     def request_auto_generate(self):
         with self._lock:
@@ -218,7 +249,7 @@ class Service:
             self._auto_timer=None
             try: self.start(rerun=True)
             except Exception:
-                logging.getLogger('p115tool').warning('115整理后自动生成未启动，请检查STRM配置和数据目录。')
+                logger.warning('115整理后自动生成未启动，请检查STRM配置和数据目录。')
 
     def _generate_pending(self):
         while True:
@@ -339,7 +370,7 @@ class Service:
         target=self.strm.root.joinpath(*safe_parts(destination+'.strm'))
         proof=self.query('SELECT * FROM strm_output_proofs WHERE path=?',(str(target),),one=True)
         digest=proof['digest'] if proof and proof['file_id']==fid else None
-        if not digest and previous and previous['strm_path'] and Path(previous['strm_path']).resolve()==target.resolve():
+        if proof is None and previous and previous['strm_path'] and Path(previous['strm_path']).resolve()==target.resolve():
             digest=self.legacy_loopback_digest(target,token)
         checkpoint=[]
         def before_replace():
@@ -364,18 +395,17 @@ class Service:
         return output
 
     def legacy_loopback_digest(self,target,token):
-        # Narrow compatibility repair for old plugin output. No arbitrary edited
-        # URL is adopted: recorded path, verified source, exact token and the old
-        # default loopback endpoints are all required by the caller and here.
+        # Compatibility repair for old plugin output created before strm_output_proofs:
+        # require no existing proof, recorded strm_path, exact playback prefix and exact random token.
         if target.is_symlink() or not target.resolve().is_relative_to(self.strm.root) or not target.is_file():
             return None
         content=target.read_bytes()
         try:
             value=content.decode('utf-8').replace('\r\n','\n')
             parsed=urlsplit(value.rstrip('\n'))
-            if (value!=parsed.geturl()+'\n' or parsed.scheme!='http'
-                    or parsed.netloc not in ('127.0.0.1:8000','localhost:8000','127.0.0.1:3000','localhost:3000')
-                    or parsed.path!='/api/v1/plugin/P115Tool/play/'+token or parsed.query or parsed.fragment):
+            if (value!=parsed.geturl()+'\n' or parsed.scheme not in ('http','https')
+                    or not parsed.hostname or parsed.username or parsed.password
+                    or parsed.path!=self.config.playback_prefix+'/play/'+token or parsed.query or parsed.fragment):
                 return None
         except (ValueError,UnicodeError):
             return None
