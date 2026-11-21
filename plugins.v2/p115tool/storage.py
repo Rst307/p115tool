@@ -16,12 +16,11 @@ import time
 import uuid
 from urllib.parse import urlsplit, parse_qs
 from .models import RemoteFile, MissingFile, RemoteError, SafetyError, ToolError, ShareRejected
+from .playback import PlaybackManager, StorageGate, PLAYBACK_GUARD, RECEIVE_RECOVERY_COOLDOWN
 from .strm import classify, safe_parts
 from .import_history import display_name
 
 UA = 'p115tool-storage-validation'
-PLAYBACK_GUARD = 24 * 3600
-RECEIVE_RECOVERY_COOLDOWN = 30
 PURGE_REASONS = {'LEGACY_CHECKPOINT','RECYCLE_IDENTITY_NOT_UNIQUE','RECYCLE_PURGE_UNCONFIRMED',
                 'RECYCLE_LIST_UNSUPPORTED','RECYCLE_ENTRY_UNSUPPORTED','RECYCLE_ENTRY_INVALID',
                 'RECYCLE_LIST_INCOMPLETE','RECYCLE_UPSTREAM_ERROR','RECYCLE_SOURCE_PRESENT','RECYCLE_UNKNOWN'}
@@ -108,7 +107,7 @@ def matches(file, row, parent=None):
 class StorageManager:
     def __init__(self, service):
         self.service=service; self.client=service.client; self.config=service.config
-        self._gate=threading.RLock(); self._thread=None
+        self._gate=StorageGate(); self._thread=None
         self._live_job=None
         self._import_queue=[]; self._import_tasks=[]; self._import_keys={}; self._import_sequence=0
         self._pending_action=None; self._refresh_pending=False
@@ -148,6 +147,7 @@ class StorageManager:
                     ('abandoned_resource_copies', ('root_cid','folder_cid'))):
                 for column in columns:
                     db.execute(f'CREATE INDEX IF NOT EXISTS idx_{table}_{column} ON {table}({column})')
+            db.execute('CREATE INDEX IF NOT EXISTS idx_abandoned_resource_copies_media_id ON abandoned_resource_copies(media_id,abandoned_at)')
             for before,after in [('SHARE_CREATING','SHARE_CREATE_UNKNOWN'),('SOURCE_DELETING','SOURCE_DELETE_UNKNOWN')]:
                 db.execute('UPDATE resource_storage SET stage=? WHERE stage=?',(after,before))
             for before,after in [('FOLDER_CREATING','FOLDER_UNKNOWN'),('RECEIVING','RECEIVE_UNKNOWN'),('DELETING','DELETE_UNKNOWN')]:
@@ -158,6 +158,7 @@ class StorageManager:
         self.recycle=RecycleCleaner(self)
         from .quality import VirtualUpgrades
         self.upgrades=VirtualUpgrades(self)
+        self.playback=PlaybackManager(self)
 
     @property
     def busy(self):
@@ -818,10 +819,7 @@ class StorageManager:
             raise ToolError('Recycle purge needs attention; batch stopped') from None
 
     def validate_folder(self, copy):
-        folder=self.client.stat(copy['folder_cid'])
-        if not folder.is_dir or folder.parent_id!=copy['root_cid'] or folder.name!=copy['folder_name']:
-            raise SafetyError('Temporary directory identity changed')
-        return folder
+        return self.playback.validate_folder(copy)
 
     def confirm_absent(self, file_id):
         # One read after a write; an uncertain result stays checkpointed.
@@ -830,220 +828,19 @@ class StorageManager:
         raise SafetyError('Deleted file still present')
 
     def locate_copy(self, row, copy):
-        self.validate_folder(copy)
-        files=list(self.client.list_files(copy['folder_cid']))
-        candidates=[f for f in files if matches(f,row,copy['folder_cid'])]
-        if len(files)!=1 or len(candidates)!=1 or not candidates[0].pickcode:
-            raise SafetyError('Temporary contents not uniquely verified')
-        return candidates[0]
+        return self.playback.locate_copy(row, copy)
 
     def create_copy_folder(self, media_id, root, abandoned=None):
-        if not root: raise SafetyError('Temporary directory not configured')
-        if self.client.directory_path(root)=='/': raise SafetyError('Invalid temporary root')
-        name='p115tool-'+uuid.uuid4().hex
-        # Commit the new identity before creating; an unknown result is never retried.
-        with self.service._lock,closing(sqlite3.connect(self.service.path)) as db,db:
-            # Archive and replace atomically: a crash can never discard the old
-            # unknown intent or leave it eligible for an automatic resubmission.
-            if abandoned is not None:
-                db.execute('INSERT INTO abandoned_resource_copies VALUES(?,?,?,?,?,?,?,?,?,?)',
-                    (uuid.uuid4().hex,media_id,abandoned['root_cid'],abandoned['folder_name'],
-                     abandoned['folder_cid'],abandoned['file_id'],abandoned['stage'],
-                     abandoned['received_at'],abandoned['lease_until'],time.time()))
-            db.execute("INSERT INTO resource_copies(media_id,root_cid,folder_name,stage) VALUES(?,?,?,'FOLDER_CREATING') "
-                "ON CONFLICT(media_id) DO UPDATE SET root_cid=excluded.root_cid,folder_name=excluded.folder_name,"
-                "folder_cid='',file_id='',received_at=0,lease_until=0,stage='FOLDER_CREATING'",(media_id,root,name))
-        try: cid=self.client.create_temp_directory(root,name)
-        except Exception:
-            self.service.query("UPDATE resource_copies SET stage='FOLDER_UNKNOWN' WHERE media_id=?",(media_id,))
-            raise ToolError('Temporary directory outcome unknown') from None
-        self.service.query("UPDATE resource_copies SET folder_cid=?,stage='EMPTY' WHERE media_id=?",(cid,media_id))
-        return self.copy(media_id)
+        return self.playback.create_copy_folder(media_id, root, abandoned=abandoned)
 
     def ensure_copy(self, media_id, recover_unknown=True):
-        with self._gate:
-            if self.service._stop.is_set(): raise InterruptedError()
-            row=self.row(media_id)
-            if not row or not row['share_fid']: raise SafetyError('Share mapping unavailable')
-            copy=self.copy(media_id)
-            if copy and copy['stage'] in ('RECEIVE_UNKNOWN','RECEIVED'):
-                # Prefer a late successful receive. Only a verified empty or
-                # missing old directory permits an isolated new attempt.
-                try:
-                    try: self.validate_folder(copy)
-                    except MissingFile: files=[]
-                    else: files=list(self.client.list_files(copy['folder_cid']))
-                    if not files:
-                        if copy['stage']=='RECEIVED' and time.time()-copy['received_at']<RECEIVE_RECOVERY_COOLDOWN:
-                            raise SafetyError('Temporary transfer awaiting visibility')
-                        if not recover_unknown: raise SafetyError('Temporary write outcome unresolved')
-                        recent=self.service.query('SELECT max(abandoned_at) at FROM abandoned_resource_copies WHERE media_id=?',(media_id,),one=True)
-                        if recent['at'] is not None and time.time()-recent['at']<RECEIVE_RECOVERY_COOLDOWN:
-                            raise SafetyError('Temporary recovery cooling down')
-                        if self.verify_share(row)!=row['share_fid']:
-                            raise SafetyError('Share mapping changed')
-                        # Recheck after share validation, which may take time.
-                        try: self.validate_folder(copy)
-                        except MissingFile: pass
-                        else:
-                            if list(self.client.list_files(copy['folder_cid'])):
-                                raise SafetyError('Temporary contents changed')
-                        if self.service._stop.is_set(): raise InterruptedError()
-                        self.create_copy_folder(media_id,copy['root_cid'],abandoned=copy)
-                    else:
-                        if len(files)!=1:
-                            raise SafetyError('Temporary contents not uniquely verified')
-                        if not matches(files[0],row,copy['folder_cid']):
-                            raise SafetyError('Temporary identity changed')
-                        candidate=files[0]
-                        actual=self.client.stat(candidate.file_id)
-                        if actual.file_id!=candidate.file_id or not matches(actual,row,copy['folder_cid']):
-                            raise SafetyError('Temporary identity changed')
-                        if not actual.pickcode: raise SafetyError('Temporary playback code unavailable')
-                except Exception as exc:
-                    if self.service._stop.is_set(): raise InterruptedError() from None
-                    if copy['stage']=='RECEIVED':
-                        if isinstance(exc,ToolError): exc.copy_state=self.copy(media_id)['stage']
-                        raise
-                    error=SafetyError('Temporary recovery cooling down' if exc.args==('Temporary recovery cooling down',)
-                                      else 'Temporary write outcome unresolved')
-                    error.copy_state=self.copy(media_id)['stage']
-                    for key in ('operation','sdk_error','upstream_code'):
-                        if hasattr(exc,key):setattr(error,key,getattr(exc,key))
-                    raise error from None
-                if not files: return self.ensure_copy(media_id,recover_unknown=False)
-                self.service.query("UPDATE resource_copies SET file_id=?,stage='READY',received_at=? WHERE media_id=?",(actual.file_id,time.time(),media_id))
-                return actual
-            if copy and copy['stage']=='READY':
-                actual=None;read_error=None
-                try: actual=self.client.stat(copy['file_id'])
-                except MissingFile: pass
-                except RemoteError as exc: read_error=exc
-                if actual is not None and not matches(actual,row,copy['folder_cid']):
-                    raise SafetyError('Temporary identity changed')
-                # get_info can still return metadata for permanently deleted
-                # files. Verify live membership in the recorded directory too.
-                # A failed detail read alone never authorizes another receive.
-                try: self.validate_folder(copy)
-                except MissingFile:
-                    self.create_copy_folder(media_id,copy['root_cid'])
-                    return self.ensure_copy(media_id,recover_unknown=recover_unknown)
-                contents=list(self.client.list_files(copy['folder_cid']))
-                if not contents:
-                    self.service.query("UPDATE resource_copies SET stage='EMPTY',file_id='',received_at=0,lease_until=0 WHERE media_id=?",(media_id,))
-                    return self.ensure_copy(media_id,recover_unknown=recover_unknown)
-                if read_error is not None: raise read_error
-                members=[f for f in contents if f.file_id==copy['file_id']]
-                if actual is None or len(members)!=1 or not matches(members[0],row,copy['folder_cid']):
-                    raise SafetyError('Temporary contents changed')
-                return actual
-            if copy and copy['stage'] in ('FOLDER_UNKNOWN','RECEIVE_UNKNOWN','DELETE_UNKNOWN','FOLDER_CREATING','RECEIVING','DELETING'):
-                error=SafetyError('Temporary write outcome unresolved')
-                error.copy_state=copy['stage']
-                raise error
-            if not copy:
-                copy=self.create_copy_folder(media_id,self.config.temp_cid)
-            try: self.validate_folder(copy)
-            except MissingFile:
-                copy=self.create_copy_folder(media_id,copy['root_cid'])
-                self.validate_folder(copy)
-            if list(self.client.list_files(copy['folder_cid'])): raise SafetyError('Temporary directory not empty')
-            # Verify sharing metadata again immediately before receiving.
-            members=list(self.client.share_files(row['share_code'],row['password'],'0')) if row['own'] else None
-            if members is not None and not any(f.file_id==row['share_fid'] and matches(f,row) for f in members):
-                raise SafetyError('Owned share file changed')
-            if self.service._stop.is_set(): raise InterruptedError()
-            self.service.query("UPDATE resource_copies SET stage='RECEIVING' WHERE media_id=?",(media_id,))
-            try: self.client.receive_to_temp(row['share_code'],row['password'],row['share_fid'],copy['folder_cid'])
-            except Exception as exc:
-                self.service.query("UPDATE resource_copies SET stage='RECEIVE_UNKNOWN' WHERE media_id=?",(media_id,))
-                error=ToolError('Temporary transfer outcome unknown')
-                error.copy_state='RECEIVE_UNKNOWN'
-                # Preserve only diagnostic attributes; log_failure allowlists
-                # their values and never emits the SDK payload or exception text.
-                for key in ('operation','sdk_error','upstream_code'):
-                    if hasattr(exc,key):setattr(error,key,getattr(exc,key))
-                raise error from None
-            self.service.query("UPDATE resource_copies SET stage='RECEIVED',received_at=? WHERE media_id=?",(time.time(),media_id))
-            return self.ensure_copy(media_id,recover_unknown=False)
+        return self.playback.ensure_copy(media_id, recover_unknown=recover_unknown)
 
     def play_moviepilot_copy(self, media_id, ua):
-        with self._gate:
-            selection = self.service.query('SELECT selected_id,previous_id FROM virtual_selections WHERE stable_id=?',
-                                           (media_id,), one=True)
-            versions = (selection['selected_id'], selection['previous_id']) if selection else (media_id,)
-            unavailable = SafetyError('Temporary copy must be transferred in 115 Cookie mode')
-            for version_id in dict.fromkeys(versions):
-                if self.service._stop.is_set(): raise InterruptedError()
-                copy = self.copy(version_id)
-                if not copy: continue
-                unavailable.copy_state = copy['stage']
-                if copy['stage'] == 'EMPTY': continue
-                if copy['stage'] not in ('READY', 'RECEIVED', 'RECEIVE_UNKNOWN'):
-                    error = SafetyError('Temporary write outcome unresolved')
-                    error.copy_state = copy['stage']
-                    raise error
-                row = self.row(version_id)
-                if not row or not row['share_fid']: raise SafetyError('Share mapping unavailable')
-                try:
-                    self.validate_folder(copy)
-                    files = list(self.client.list_files(copy['folder_cid']))
-                except MissingFile:
-                    continue
-                if not files: continue
-                if len(files) != 1:
-                    raise SafetyError('Temporary contents not uniquely verified')
-                candidate = files[0]
-                check_file_id = copy['stage'] == 'READY' or bool(copy['file_id'])
-                if (check_file_id and candidate.file_id != copy['file_id']) or not matches(candidate, row, copy['folder_cid']):
-                    raise SafetyError('Temporary contents changed')
-                try: actual = self.client.stat(candidate.file_id)
-                except MissingFile: continue
-                if actual.file_id != candidate.file_id or not matches(actual, row, copy['folder_cid']):
-                    raise SafetyError('Temporary identity changed')
-                if not actual.pickcode: raise SafetyError('Temporary playback code unavailable')
-                try: link = self.client.normal_link(actual.pickcode, ua, file_id=actual.file_id)
-                except MissingFile: continue
-                self.service.query('UPDATE resource_copies SET lease_until=max(lease_until,?) WHERE media_id=?',
-                                   (time.time() + PLAYBACK_GUARD, version_id))
-                return link.url
-            raise unavailable
+        return self.playback.play_moviepilot_copy(media_id, ua)
 
-    def play(self, media_id, ua):
-        if self.service._stop.is_set(): raise ToolError('Service stopped')
-        row=self.row(media_id)
-        if self.config.use_moviepilot_auth:
-            if row and (row['kind'] != 'ACTUAL' or row['stage'] in ('SOURCE_DELETE_UNKNOWN', 'SOURCE_DELETING')):
-                return self.play_moviepilot_copy(media_id, ua)
-            source = row or self.service.query('SELECT pickcode FROM strm_files WHERE file_id=?', (media_id,), one=True)
-            return self.client.normal_link(source['pickcode'], ua, file_id=media_id).url
-        if not row:
-            source=self.service.query('SELECT * FROM strm_files WHERE file_id=?',(media_id,),one=True)
-            return self.client.normal_link(source['pickcode'],ua).url
-        with self._gate:
-            if self.service._stop.is_set(): raise ToolError('Service stopped')
-            media_id=self.upgrades.playback_source(media_id)
-            row=self.row(media_id)
-            if not row or (row['kind']=='ACTUAL' and row['stage'] not in ('SOURCE_DELETE_UNKNOWN','SOURCE_DELETING')):
-                source=row or self.service.query('SELECT * FROM strm_files WHERE file_id=?',(media_id,),one=True)
-                return self.client.normal_link(source['pickcode'],ua).url
-            actual=self.ensure_copy(media_id)
-            # Pure 302 cannot observe when Emby finishes reading the CDN stream.
-            # A persistent 24h lease is renewed on every GET/HEAD request.
-            self.service.query('UPDATE resource_copies SET lease_until=? WHERE media_id=?',(time.time()+PLAYBACK_GUARD,media_id))
-            try: return self.client.normal_link(actual.pickcode,ua).url
-            except RemoteError as exc:
-                # The user may remove the copy after stat but before link lookup.
-                # SDK download errors need not use the MissingFile subclass.
-                # Recheck live membership; an existing copy is never re-received.
-                restored=self.ensure_copy(media_id,recover_unknown=False)
-                if restored.file_id==actual.file_id:
-                    if isinstance(exc,MissingFile):
-                        raise SafetyError('Playback link unavailable for existing copy') from None
-                    raise
-                self.service.query('UPDATE resource_copies SET lease_until=? WHERE media_id=?',(time.time()+PLAYBACK_GUARD,media_id))
-                # One bounded recovery per request, no loop on persistent errors.
-                return self.client.normal_link(restored.pickcode,ua).url
+    def play(self, media_id, ua, target=None):
+        return self.playback.play(media_id, ua, target=target)
 
     def cleanup(self, job=None):
         job=job or {'done':0,'failed':0,'error':None}

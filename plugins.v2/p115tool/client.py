@@ -3,9 +3,11 @@ import ipaddress
 import re
 import threading
 import time
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 from .cookie_renewal import CookieRenewal, cookie_identity
 from .models import RemoteFile, DownloadLink, RemoteError, MissingFile, SafetyError, ShareRejected
+
+PICKCODE_RE = re.compile(r'[A-Za-z0-9]+')
 
 OPEN_READ_METHODS = {
     'fs_files': 'fs_files',
@@ -411,19 +413,19 @@ class P115ClientManager:
     def _link(self, value):
         url = str(value)
         headers = dict(getattr(value, "headers", {}) or {})
-        self.validate_url(url)
+        parsed = self._validate_url_parsed(url)
         # Header-bound direct URLs cannot be played using a pure redirect if a
         # Cookie is required. Do NOT forward the account cookie to Emby/CDN.
-        query = dict(__import__("urllib.parse", fromlist=["parse_qsl"]).parse_qsl(urlsplit(url).query))
-        if query.get("f") == "3" or any(k.lower() == "cookie" and v for k, v in headers.items()):
+        if (any(k == "f" and v == "3" for k, v in parse_qsl(parsed.query))
+                or any(k.lower() == "cookie" and v for k, v in headers.items())):
             raise SafetyError("115 URL requires cookies and cannot be safely used for 302")
         return DownloadLink(url, headers)
 
-    def validate_url(self, url):
+    def _validate_url_parsed(self, url):
         parsed = urlsplit(url)
         host = (parsed.hostname or "").lower().rstrip(".")
         if (parsed.scheme not in ("http", "https") or not host or parsed.username or parsed.password
-                or parsed.port not in (None, 80, 443) or any(c in url for c in ("\r", "\n"))):
+                or parsed.port not in (None, 80, 443) or "\r" in url or "\n" in url):
             raise SafetyError("Unsafe download URL")
         try:
             ipaddress.ip_address(host)
@@ -433,10 +435,14 @@ class P115ClientManager:
             raise SafetyError("IP-address download URLs are not allowed")
         if not any(host == s or host.endswith("." + s) for s in self.config.allowed_cdn_suffixes if s):
             raise SafetyError("Download URL is outside configured 115 CDN domains")
+        return parsed
+
+    def validate_url(self, url):
+        self._validate_url_parsed(url)
 
     def normal_link(self, pickcode, ua, *, file_id=None):
         if self.config.use_moviepilot_auth:
-            if not isinstance(pickcode, str) or not re.fullmatch(r'[A-Za-z0-9]+', pickcode) or not file_id:
+            if not isinstance(pickcode, str) or not PICKCODE_RE.fullmatch(pickcode) or not file_id:
                 raise SafetyError('115 file identity mismatch')
             response = check_response(self.call('download_url', pickcode, user_agent=ua))
             entries = response.get('data')

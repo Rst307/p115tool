@@ -1,6 +1,6 @@
 """Personal-drive traversal and stable STRM mapping, with explicit storage tasks."""
 from pathlib import Path
-from contextlib import closing
+from contextlib import closing, contextmanager
 import json
 import secrets
 import sqlite3
@@ -69,16 +69,26 @@ class Service:
             if self._db is not None: self._db.close()
             self.client.close(); self._file_lock.close(); raise
 
+    def _conn(self):
+        if self._closed and self._db is None:
+            raise ToolError('Service stopped')
+        if self._db is None:
+            self._db = sqlite3.connect(self.path, check_same_thread=False)
+            self._db.row_factory = sqlite3.Row
+        return self._db
+
+    @contextmanager
+    def transaction(self):
+        with self._lock:
+            with self._conn() as db:
+                yield db
+
     def query(self,sql,args=(),one=False):
         # All callers (workers, playback and status) share the service lock.
         # Keep each write durable before returning, but reuse the connection and
         # its prepared-statement cache rather than reopening it for every file.
         with self._lock:
-            if self._closed and self._db is None: raise ToolError('Service stopped')
-            if self._db is None:
-                self._db=sqlite3.connect(self.path,check_same_thread=False)
-                self._db.row_factory=sqlite3.Row
-            with self._db as db:
+            with self._conn() as db:
                 cursor=db.execute(sql,args)
                 if cursor.description:
                     rows=[dict(r) for r in cursor.fetchall()]
@@ -314,11 +324,15 @@ class Service:
     def play(self,token,ua):
         with self._playback_idle:
             if self._closed: raise ToolError('Service stopped')
-            row=self.query('SELECT file_id FROM strm_files WHERE token=?',(token,),one=True)
+            row=self.query(
+                'SELECT f.file_id,f.pickcode,s.kind,s.stage,'
+                'EXISTS(SELECT 1 FROM virtual_selections WHERE stable_id=f.file_id) AS selected '
+                'FROM strm_files f LEFT JOIN resource_storage s ON s.media_id=f.file_id WHERE f.token=?',
+                (token,),one=True)
             if not row: raise MissingFile('Playback mapping unavailable')
             self._active_playbacks += 1
         try:
-            return self.storage.play(row['file_id'], ua)
+            return self.storage.play(row['file_id'], ua, target=row)
         finally:
             with self._playback_idle:
                 self._active_playbacks -= 1
