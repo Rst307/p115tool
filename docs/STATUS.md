@@ -1,6 +1,15 @@
 # 当前插件范围与验证
 
-更新时间：2026-11-22（Asia/Shanghai），版本0.2.69。
+更新时间：2026-11-22（Asia/Shanghai），版本0.2.70。
+
+## 0.2.70 将 115 SDK 底层传输切换为纯 HTTP/1.1 直连 httpx.Client
+
+- 针对虚拟资源播放调用 `fs_files`（`webapi.115.com`）在 `urllib3_future` 默认 HTTP/2/QUIC 连接池下偶发长期挂死（超过 50–360 秒）并锁死全局 `P115ClientManager._lock` 的问题，在 `p115tool/client.py` 中为真实 `p115client` 调用注入基于 `httpx.Client(http2=False, trust_env=False, follow_redirects=False)` 的同步传输器：
+  - 严格执行 `connect=min(8s, timeout)` / `read=timeout` / `write=10s` / `pool=10s`，零底层静默重试；
+  - 直连 115 接口，绝不被容器 `HTTP_PROXY`/`HTTPS_PROXY` 劫持；
+  - 将 Cookie 以请求头方式传递，避免 `httpx` 客户端持久 Cookie 冲突与弃用警告；`close()` 时关闭连接池。
+
+验证：`test_storage.ManagerTests`、`test_cookie_renewal`、`test_playback_concurrency`、`test_moviepilot_auth`、`test_native_package` 共 54 项定向回归全部通过，未运行真实媒体联调。
 
 ## 0.2.69 恢复 Emby 本地代理默认连接行为并补充 502 异常日志
 

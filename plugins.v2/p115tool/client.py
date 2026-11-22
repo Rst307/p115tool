@@ -84,6 +84,7 @@ class P115ClientManager:
         self._lock = threading.RLock()
         self._lock_owner = None
         self._sdk = sdk
+        self._http = None
         self._moviepilot_storage = None
         self._last_request = 0.0
         self._closed = False
@@ -96,7 +97,68 @@ class P115ClientManager:
         with self._lock:
             self._closed = True
             self._sdk = None
+            if self._http is not None:
+                try:
+                    self._http.close()
+                except Exception:
+                    pass
+                self._http = None
             self._moviepilot_storage = None
+
+    def _http_client(self):
+        if self._http is None:
+            import httpx
+            # Use strict HTTP/1.1 direct connections to 115 APIs to avoid urllib3_future
+            # HTTP/2/QUIC half-open stalls and silent 3x retries under Docker proxy envs.
+            self._http = httpx.Client(http2=False, trust_env=False, follow_redirects=False)
+        return self._http
+
+    @staticmethod
+    def _use_httpx_transport(sdk):
+        if not type(sdk).__module__.startswith('p115client'):
+            return False
+        try:
+            import urllib3_future_request
+            return getattr(urllib3_future_request.request, '__module__', '') == 'urllib3_future_request'
+        except Exception:
+            return True
+
+    def _httpx_request(self, *, url, method='GET', params=None, data=None, json=None,
+                       headers=None, cookies=None, timeout=30, follow_redirects=True,
+                       raise_for_status=True, parse=None, async_=False, **extra):
+        import httpx
+        t = float(timeout) if timeout else float(self.config.request_timeout)
+        req_timeout = httpx.Timeout(connect=min(8.0, t), read=t, write=10.0, pool=10.0)
+        req_headers = dict(headers or {})
+        if cookies and not any(k.lower() == 'cookie' for k in req_headers):
+            if isinstance(cookies, dict):
+                cookie_str = '; '.join(f'{k}={v}' for k, v in cookies.items())
+            else:
+                cookie_str = '; '.join(f'{c.name}={c.value}' for c in cookies)
+            if cookie_str:
+                req_headers['cookie'] = cookie_str
+        req_kwargs = {
+            'params': params,
+            'headers': req_headers,
+            'timeout': req_timeout,
+            'follow_redirects': bool(follow_redirects),
+        }
+        if json is not None:
+            req_kwargs['json'] = json
+        elif isinstance(data, (bytes, bytearray, memoryview, str)):
+            req_kwargs['content'] = data
+        elif data is not None:
+            req_kwargs['data'] = data
+        response = self._http_client().request(method, url, **req_kwargs)
+        if raise_for_status and response.status_code >= 400:
+            response.raise_for_status()
+        if callable(parse):
+            return parse(response, response.content)
+        if parse is False:
+            return response.content
+        if parse is True:
+            return response.json()
+        return response
 
     def _client(self):
         if self._sdk is None:
@@ -338,8 +400,8 @@ class P115ClientManager:
             else:
                 sdk = self._client()
                 call_kwargs = dict(kwargs)
-                if type(sdk).__module__.startswith('p115client'):
-                    call_kwargs.setdefault('retries', False)
+                if self._use_httpx_transport(sdk):
+                    call_kwargs.setdefault('request', self._httpx_request)
                 result = getattr(sdk, method)(*args, timeout=self.config.request_timeout, **call_kwargs)
             if (method=='share_send' and isinstance(result,dict) and result.get('state') in (False,0)
                     and isinstance(result.get('data',{}),dict) and not result.get('data',{}).get('share_code')):
