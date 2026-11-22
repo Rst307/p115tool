@@ -336,7 +336,11 @@ class P115ClientManager:
                     error.upstream_code = 20004
                     raise error
             else:
-                result=getattr(self._client(), method)(*args, timeout=self.config.request_timeout, **kwargs)
+                sdk = self._client()
+                call_kwargs = dict(kwargs)
+                if type(sdk).__module__.startswith('p115client'):
+                    call_kwargs.setdefault('retries', False)
+                result = getattr(sdk, method)(*args, timeout=self.config.request_timeout, **call_kwargs)
             if (method=='share_send' and isinstance(result,dict) and result.get('state') in (False,0)
                     and isinstance(result.get('data',{}),dict) and not result.get('data',{}).get('share_code')):
                 error=ShareRejected('115 rejected share creation')

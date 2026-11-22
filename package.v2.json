@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "实际与虚拟存储、分享临时转存、分类STRM及302播放",
     "labels": "115,STRM,媒体管理",
-    "version": "0.2.67",
+    "version": "0.2.68",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.2.68": "修复115底层urllib3默认静默重试3次将30秒超时放大成120秒导致虚拟副本校验长期卡死的问题（显式禁用SDK底层retries=False，严格按设定超时快速返回）；同时Emby本地代理连接内网Emby显式禁用环境代理(trust_env=False)，避免被容器HTTP_PROXY误劫持",
       "v0.2.67": "消除115接口超时二次重试引发的60秒锁雪崩（仅对瞬时断连重试，超时不再持锁重等30秒）；补充115 SDK全局等锁（>2秒）与慢调用（>5秒）脱敏诊断日志及Emby代理取链失败原因日志",
       "v0.2.66": "彻底移除Emby本地代理在PlaybackInfo阶段阻塞调115取链/转存的行为（修复多版本影视打开PlaybackInfo耗时35–50秒导致客户端超时无法播放及误转存未选版本的问题）：PlaybackInfo永远0ms记录映射并立即放行，仅在客户端点播/Videos/.../stream时按选中的MediaSourceId直接返回115 302直链并保留HEAD→GET 0ms接力",
       "v0.2.65": "修复Emby本地代理在PlaybackInfo阶段用API UA预热导致与随后不同播放器UA的stream请求争抢同一虚拟资源锁的问题：PlaybackInfo仅对未转存的冷虚拟资源后台预转存副本，不对实际源或已就绪副本抢锁，并支持stream自身HEAD→GET 15秒0ms直链接力",

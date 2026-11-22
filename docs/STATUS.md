@@ -1,6 +1,13 @@
 # 当前插件范围与验证
 
-更新时间：2026-11-22（Asia/Shanghai），版本0.2.67。
+更新时间：2026-11-22（Asia/Shanghai），版本0.2.68。
+
+## 0.2.68 禁用 115 SDK 底层静默重试放大超时，Emby 代理直连内网禁用环境代理
+
+- **禁用 `urllib3_future` 默认 `retries=3`**：在 `p115tool/client.py` 调用真实 `p115client` 接口时显式传 `retries=False`，防止底层将单次 `request_timeout`（默认 30 秒）静默放大 4 倍至 120 秒、卡死媒体资源锁且长期无超时日志。
+- **Emby 本地代理忽略系统代理环境变量**：在 `p115tool/emby_proxy.py` 中创建 `httpx.AsyncClient(trust_env=False)`，确保转发至内网 Emby 时绝不被容器 `HTTP_PROXY`/`HTTPS_PROXY` 劫持。
+
+验证：`test_playback_concurrency`、`test_emby_proxy`、`test_native_package` 共 26 项定向回归全部通过，未运行真实媒体联调。
 
 ## 0.2.67 消除 115 超时持锁雪崩并补充 SDK 等锁/慢调用诊断
 
