@@ -1,6 +1,15 @@
 # 当前插件范围与验证
 
-更新时间：2026-11-22（Asia/Shanghai），版本0.2.63。
+更新时间：2026-11-22（Asia/Shanghai），版本0.2.64。
+
+## 0.2.64 Emby 本地 302 代理改为 PlaybackInfo 异步并行预热
+
+- 针对实测中客户端在收到 `PlaybackInfo` 后仍请求 `/Videos/.../stream`、导致同步替换 `Path` 白等一次 115 取链并重复取链的问题，重构 `p115tool/emby_proxy.py` 流水线：
+  - 将 `emby_proxy_direct_path` 默认值改为 `False`：`PlaybackInfo` **0ms 立即放行**，同时在后台异步并行预热 115 直链（使 115 取链/虚拟副本核实与外网隧道往返并行执行）。
+  - 紧随其后的 `/Videos/.../stream` 直接消费后台预热任务（30 秒一次性 TTL），命中时 **0ms 返回 302**；即使开启 `emby_proxy_direct_path=True`，同步替换后的直链也会接力给 `stream` 避免二次取链。
+  - 服务关闭时自动取消未完成的预热任务，无残留。
+
+验证：新增预热复用且仅调用一次 `service.play` 回归测试；[test_emby_proxy.py](file:///d:/ImportantFileFolder/emby/mp/plugins/p115Tool/tests/test_emby_proxy.py) 与 `test_native_package` 共 9 项定向测试全部通过，未运行真实媒体联调。
 
 ## 0.2.63 新增内置 Emby 本地 302 代理
 

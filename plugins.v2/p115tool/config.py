@@ -35,7 +35,7 @@ class Config:
     emby_proxy_enabled: bool = False
     emby_url: str = ''
     emby_proxy_port: int = 8095
-    emby_proxy_direct_path: bool = True
+    emby_proxy_direct_path: bool = False
     allowed_cdn_suffixes: list = field(default_factory=lambda: ['115.com','115cdn.com','115cdn.net','115cdn.cn'])
     media_extensions: list = field(default_factory=lambda: ['.mkv','.mp4','.avi','.mov','.ts','.m2ts','.iso','.wmv','.flv','.m4v','.mpg','.mpeg'])
 

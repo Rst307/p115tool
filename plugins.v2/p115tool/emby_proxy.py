@@ -33,6 +33,8 @@ PLAYBACK_INFO_RE = re.compile(r'^(?:/emby)?/Items/([^/]+)/PlaybackInfo$', re.IGN
 STREAM_RE = re.compile(r'^(?:/emby)?/Videos/([^/]+)/(?:stream(?:\.[^/]+)?|original(?:\.[^/]+)?)$', re.IGNORECASE)
 SOURCE_CACHE_TTL = 1800.0
 SOURCE_CACHE_MAX = 2048
+PREFETCH_TTL = 30.0
+PREFETCH_MAX = 128
 
 
 def extract_plugin_token(path_value, playback_prefix):
@@ -54,12 +56,41 @@ def _filter_headers(headers, extra_drop=()):
     return [(k, v) for k, v in headers.items() if k.lower() not in drop]
 
 
-def build_proxy_app(service, emby_url, direct_path=True, upstream_client=None):
+def build_proxy_app(service, emby_url, direct_path=False, upstream_client=None):
     """Build the Starlette ASGI app for local Emby 302 proxying."""
     base_url = emby_url.rstrip('/')
     playback_prefix = service.config.playback_prefix
     source_tokens = {}  # (item_id, media_source_id) -> (token, expires_at)
     item_tokens = {}    # item_id -> (token, expires_at)
+    prefetched = {}     # (token, ua) -> (asyncio.Task, expires_at)
+
+    def start_prefetch(token, ua):
+        now = time.monotonic()
+        key = (token, ua)
+        existing = prefetched.get(key)
+        if existing is not None and now < existing[1] and not (existing[0].done() and existing[0].cancelled()):
+            return
+        if len(prefetched) >= PREFETCH_MAX:
+            for k in [k for k, v in prefetched.items() if now >= v[1]]:
+                prefetched.pop(k, None)
+            if len(prefetched) >= PREFETCH_MAX:
+                oldest = min(prefetched.items(), key=lambda item: item[1][1])[0]
+                prefetched.pop(oldest, None)
+
+        async def _resolve():
+            try:
+                return await run_in_threadpool(service.play, token, ua)
+            except Exception:
+                return None
+
+        task = asyncio.create_task(_resolve())
+        prefetched[key] = (task, now + PREFETCH_TTL)
+
+    def store_prefetched_result(token, ua, location):
+        now = time.monotonic()
+        fut = asyncio.get_running_loop().create_future()
+        fut.set_result(location)
+        prefetched[(token, ua)] = (fut, now + PREFETCH_TTL)
 
     def remember_token(item_id, media_source_id, token):
         now = time.monotonic()
@@ -153,6 +184,7 @@ def build_proxy_app(service, emby_url, direct_path=True, upstream_client=None):
         ua_valid = bool(ua) and len(ua) <= 1024 and not any(ord(c) < 32 for c in ua)
         sources = payload.get('MediaSources') if isinstance(payload, dict) else None
         replaced = 0
+        prefetched_started = False
         if isinstance(sources, list):
             for src in sources:
                 if not isinstance(src, dict):
@@ -167,12 +199,17 @@ def build_proxy_app(service, emby_url, direct_path=True, upstream_client=None):
                     try:
                         direct_url = await run_in_threadpool(service.play, token, ua)
                         src['Path'] = direct_url
+                        store_prefetched_result(token, ua, direct_url)
                         replaced += 1
                         logger.info(
                             f'115 Emby本地代理：PlaybackInfo直链替换成功，耗时={(time.monotonic() - started) * 1000:.1f}ms'
                         )
                     except Exception:
                         logger.warning('115 Emby本地代理：PlaybackInfo直链替换失败，保留原播放地址')
+                elif ua_valid and not prefetched_started:
+                    start_prefetch(token, ua)
+                    prefetched_started = True
+                    logger.info('115 Emby本地代理：PlaybackInfo立即放行并后台预热直链')
 
         encoded = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
         resp_headers = dict(_filter_headers(upstream.headers, extra_drop=('content-encoding', 'content-length')))
@@ -196,13 +233,24 @@ def build_proxy_app(service, emby_url, direct_path=True, upstream_client=None):
         if len(ua) > 1024 or any(ord(c) < 32 for c in ua):
             return Response(status_code=400, content='Invalid request')
         started = time.monotonic()
-        try:
-            location = await run_in_threadpool(service.play, token, ua)
-        except Exception:
-            logger.warning('115 Emby本地代理：stream 302取链失败，回退至Emby上游')
-            return await forward_streaming(request, client)
-        elapsed = (time.monotonic() - started) * 1000
-        logger.info(f'115 Emby本地代理：stream 302直链返回，耗时={elapsed:.1f}ms')
+        location = None
+        entry = prefetched.pop((token, ua), None)
+        if entry is not None and time.monotonic() < entry[1]:
+            try:
+                location = await asyncio.shield(entry[0])
+            except Exception:
+                location = None
+        if location:
+            elapsed = (time.monotonic() - started) * 1000
+            logger.info(f'115 Emby本地代理：stream命中后台预热直链返回302，耗时={elapsed:.1f}ms')
+        else:
+            try:
+                location = await run_in_threadpool(service.play, token, ua)
+            except Exception:
+                logger.warning('115 Emby本地代理：stream 302取链失败，回退至Emby上游')
+                return await forward_streaming(request, client)
+            elapsed = (time.monotonic() - started) * 1000
+            logger.info(f'115 Emby本地代理：stream 302直链返回，耗时={elapsed:.1f}ms')
         return Response(
             status_code=302,
             headers={
@@ -268,6 +316,10 @@ def build_proxy_app(service, emby_url, direct_path=True, upstream_client=None):
         try:
             yield
         finally:
+            for task, _ in prefetched.values():
+                if not task.done():
+                    task.cancel()
+            prefetched.clear()
             if owns_client:
                 await starlette_app.state.client.aclose()
 
