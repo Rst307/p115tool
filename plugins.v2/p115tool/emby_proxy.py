@@ -246,17 +246,20 @@ def build_proxy_app(service, emby_url, direct_path=False, upstream_client=None):
         if pb_match and request.method in ('GET', 'POST'):
             try:
                 return await handle_playback_info(request, client, pb_match.group(1))
-            except httpx.HTTPError:
+            except httpx.HTTPError as exc:
+                logger.warning(f'115 Emby本地代理：PlaybackInfo转发Emby失败，异常={type(exc).__name__}')
                 return Response(status_code=502, content='Emby upstream unavailable')
         stream_match = STREAM_RE.match(path)
         if stream_match and request.method in ('GET', 'HEAD'):
             try:
                 return await handle_stream(request, client, stream_match.group(1))
-            except httpx.HTTPError:
+            except httpx.HTTPError as exc:
+                logger.warning(f'115 Emby本地代理：stream转发Emby失败，异常={type(exc).__name__}')
                 return Response(status_code=502, content='Emby upstream unavailable')
         try:
             return await forward_streaming(request, client)
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
+            logger.warning(f'115 Emby本地代理：连接上游Emby失败，异常={type(exc).__name__}')
             return Response(status_code=502, content='Emby upstream unavailable')
 
     @asynccontextmanager
@@ -267,7 +270,6 @@ def build_proxy_app(service, emby_url, direct_path=False, upstream_client=None):
         else:
             starlette_app.state.client = httpx.AsyncClient(
                 follow_redirects=False,
-                trust_env=False,
                 timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10.0),
             )
             owns_client = True

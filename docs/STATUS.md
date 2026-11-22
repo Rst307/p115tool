@@ -1,6 +1,13 @@
 # 当前插件范围与验证
 
-更新时间：2026-11-22（Asia/Shanghai），版本0.2.68。
+更新时间：2026-11-22（Asia/Shanghai），版本0.2.69。
+
+## 0.2.69 恢复 Emby 本地代理默认连接行为并补充 502 异常日志
+
+- 恢复 `p115tool/emby_proxy.py` 中 `httpx.AsyncClient` 默认 `trust_env` 行为，避免在部分 Docker `bridge` 防火墙/代理环境下出现 `502 Emby upstream unavailable`。
+- 在 Emby 代理 502 错误处记录脱敏异常类名，便于定位任何上游连接问题；继续保留 `v0.2.68` 对 115 SDK 禁用底层静默重试的修复。
+
+验证：`test_emby_proxy` 与 `test_native_package` 共 9 项定向测试全部通过，未运行真实媒体联调。
 
 ## 0.2.68 禁用 115 SDK 底层静默重试放大超时，Emby 代理直连内网禁用环境代理
 
