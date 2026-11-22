@@ -1,6 +1,14 @@
 # 当前插件范围与验证
 
-更新时间：2026-11-22（Asia/Shanghai），版本0.2.65。
+更新时间：2026-11-22（Asia/Shanghai），版本0.2.66。
+
+## 0.2.66 Emby 本地 302 代理改为纯非阻塞 PlaybackInfo + 按需 stream 302
+
+- 彻底移除 `p115tool/emby_proxy.py` 在 `PlaybackInfo` 阶段同步遍历所有 `MediaSources` 调 115 转存/取链的行为，解决多版本影片打开详情/起播时 `PlaybackInfo` 阻塞 35–50 秒导致客户端超时无法播放及误转存未选版本的问题：
+  - `PlaybackInfo` 始终 0ms 记录 `(item_id, MediaSourceId) -> token` 映射后立即放行，零 115 调用、零锁竞争。
+  - 仅当客户端发起 `/Videos/{id}/stream` 时，按用户实际选中的 `MediaSourceId` 用播放器真实 `User-Agent` 一次换取 115 直链并返回 `302`（含 `HEAD` → `GET` 15 秒 0ms 一次性接力）。
+
+验证：[test_emby_proxy.py](file:///d:/ImportantFileFolder/emby/mp/plugins/p115Tool/tests/test_emby_proxy.py) 与 `test_native_package` 共 9 项定向测试全部通过，未运行真实媒体联调。
 
 ## 0.2.65 修复 Emby 本地代理 PlaybackInfo 预热与 stream 异 UA 争抢资源锁
 

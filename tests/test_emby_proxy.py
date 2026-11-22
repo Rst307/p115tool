@@ -85,26 +85,26 @@ class EmbyProxyTests(unittest.TestCase):
             self.assertEqual(info.status_code, 200)
             self.assertEqual(info.json(), {'ServerName': 'HomeEmby'})
 
-            # 2. PlaybackInfo replaces plugin LAN path with 115 direct URL while keeping local media untouched.
-            with self.assertLogs('p115tool.emby_proxy', level='INFO') as logs:
-                pb = client.post('/emby/Items/42/PlaybackInfo', headers={'User-Agent': 'SenPlayer/2.0'})
+            # 2. PlaybackInfo records MediaSource tokens immediately without calling 115 or blocking.
+            pb = client.post('/emby/Items/42/PlaybackInfo', headers={'User-Agent': 'SenPlayer/2.0'})
             self.assertEqual(pb.status_code, 200)
             sources = pb.json()['MediaSources']
-            self.assertEqual(sources[0]['Path'], DIRECT_LINK)
+            self.assertEqual(sources[0]['Path'], f'http://192.168.0.2:3000/api/v1/plugin/P115Tool/play/{TOKEN}')
             self.assertEqual(sources[1]['Path'], '/data/movies/local.mkv')
-            self.assertEqual(service.calls, [(TOKEN, 'SenPlayer/2.0')])
-            self.assertNotIn(TOKEN, '\n'.join(logs.output))
-            self.assertNotIn(DIRECT_LINK, '\n'.join(logs.output))
+            self.assertEqual(service.calls, [])
 
             # 3. /Videos/42/stream redirects directly to 115 CDN using cached MediaSource token.
-            stream = client.get(
-                '/emby/Videos/42/stream?MediaSourceId=ms-1',
-                headers={'User-Agent': 'Infuse/8.0'},
-                follow_redirects=False,
-            )
+            with self.assertLogs('p115tool.emby_proxy', level='INFO') as logs:
+                stream = client.get(
+                    '/emby/Videos/42/stream?MediaSourceId=ms-1',
+                    headers={'User-Agent': 'Infuse/8.0'},
+                    follow_redirects=False,
+                )
             self.assertEqual(stream.status_code, 302)
             self.assertEqual(stream.headers['location'], DIRECT_LINK)
-            self.assertEqual(service.calls[-1], (TOKEN, 'Infuse/8.0'))
+            self.assertEqual(service.calls, [(TOKEN, 'Infuse/8.0')])
+            self.assertNotIn(TOKEN, '\n'.join(logs.output))
+            self.assertNotIn(DIRECT_LINK, '\n'.join(logs.output))
 
             # 4. Local non-STRM video stream passes through transparently.
             local_stream = client.get('/emby/Videos/99/stream', headers={'User-Agent': 'Infuse/8.0'})
