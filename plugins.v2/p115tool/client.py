@@ -5,7 +5,7 @@ import threading
 import time
 from urllib.parse import parse_qsl, urlsplit
 from .cookie_renewal import CookieRenewal, cookie_identity
-from .models import RemoteFile, DownloadLink, RemoteError, MissingFile, SafetyError, ShareRejected
+from .models import RemoteFile, DownloadLink, RemoteError, MissingFile, SafetyError, ShareRejected, PLUGIN_VERSION
 try:
     from app.log import logger
 except ModuleNotFoundError:
@@ -19,8 +19,8 @@ OPEN_READ_METHODS = {
     'fs_file': 'fs_info',
     'download_url': 'download_url_info',
 }
-COOKIE_RETRY_READS = frozenset(OPEN_READ_METHODS) | {'share_snap', 'share_download_url', 'recyclebin_list'}
-TRANSIENT_RETRY_READS = frozenset(OPEN_READ_METHODS)
+COOKIE_RETRY_READS = frozenset(OPEN_READ_METHODS) | {'fs_files_app', 'share_snap', 'share_download_url', 'recyclebin_list'}
+TRANSIENT_RETRY_READS = frozenset(OPEN_READ_METHODS) | {'fs_files_app'}
 TRANSIENT_SDK_ERRORS = frozenset({
     'ConnectError', 'ConnectionError', 'ConnectionResetError', 'ConnectionAbortedError',
     'BrokenPipeError', 'RemoteProtocolError', 'ProtocolError', 'SSLError',
@@ -356,7 +356,7 @@ class P115ClientManager:
         acquired = self._lock.acquire(timeout=2.0)
         if not acquired:
             owner = self._lock_owner or 'unknown'
-            logger.warning(f'115 SDK等待全局调用锁：待执行接口={method}，当前占用={owner}')
+            logger.warning(f'[v{PLUGIN_VERSION}] 115 SDK等待全局调用锁：待执行接口={method}，当前占用={owner}')
             self._lock.acquire()
         prev_owner = self._lock_owner
         self._lock_owner = f'{threading.current_thread().name}:{method}'
@@ -379,14 +379,14 @@ class P115ClientManager:
         finally:
             elapsed = time.monotonic() - started
             if elapsed >= 5.0:
-                logger.warning(f'115 SDK慢调用：接口={method}，耗时={elapsed:.1f}s')
+                logger.warning(f'[v{PLUGIN_VERSION}] 115 SDK慢调用：接口={method}，耗时={elapsed:.1f}s')
             self._lock_owner = prev_owner
             self._lock.release()
 
     def _call_once(self, method, args, kwargs):
         if self._closed:
             raise RemoteError('115 client is stopped')
-        min_gap = 0.05 if method in OPEN_READ_METHODS else 0.2
+        min_gap = 0.05 if method in TRANSIENT_RETRY_READS else 0.2
         wait = min_gap - (time.monotonic() - self._last_request)
         if wait > 0:
             time.sleep(wait)
@@ -461,13 +461,19 @@ class P115ClientManager:
         return '/' + '/'.join(parts)
 
     def list_verified_folder(self, cid, expected_parent, expected_name):
-        """Verify folder identity from fs_files ancestors and list contents in one round-trip."""
+        """Verify folder identity from fs_files_app/fs_files ancestors and list contents in one round-trip."""
         offset = 0
         seen = set()
         expected_count = None
         results = []
+        list_method = 'fs_files'
+        if not self.config.use_moviepilot_auth:
+            with self._lock:
+                sdk = self._client()
+                if callable(getattr(sdk, 'fs_files_app', None)):
+                    list_method = 'fs_files_app'
         while True:
-            resp = check_response(self.call("fs_files", {"cid": cid, "offset": offset, "limit": 1000, "cur": 1, "show_dir": 1}))
+            resp = check_response(self.call(list_method, {"cid": cid, "offset": offset, "limit": 1000, "cur": 1, "show_dir": 1}))
             directory = self._directory_path(resp, str(cid))
             trail = resp.get("path", [])
             if (not isinstance(trail, list) or len(trail) < 2

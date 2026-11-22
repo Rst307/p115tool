@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "实际与虚拟存储、分享临时转存、分类STRM及302播放",
     "labels": "115,STRM,媒体管理",
-    "version": "0.2.70",
+    "version": "0.2.71",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.2.71": "虚拟副本目录校验优先改用proapi.115.com的fs_files_app接口，彻底绕开易被风控卡死的webapi.115.com/files；同时在播放、Emby代理与SDK诊断日志中统一附带插件版本号[v0.2.71]，一眼确认运行版本",
       "v0.2.70": "修复虚拟资源调用fs_files(webapi.115.com)在urllib3_future下长时间挂死并锁死全局SDK锁的问题：真实115 SDK底层切换为纯HTTP/1.1直连的httpx.Client(http2=False, trust_env=False)，严格执行连接与读取超时、零隐式重试且彻底避免HTTP/2/QUIC半开连接卡死与环境代理劫持",
       "v0.2.69": "恢复Emby本地代理默认环境连接行为（修复部分Docker bridge网络禁用trust_env后报502 Emby upstream unavailable的问题），并补充上游连接失败的脱敏异常类型日志；保留115 SDK禁用底层静默重试修复",
       "v0.2.68": "修复115底层urllib3默认静默重试3次将30秒超时放大成120秒导致虚拟副本校验长期卡死的问题（显式禁用SDK底层retries=False，严格按设定超时快速返回）；同时Emby本地代理连接内网Emby显式禁用环境代理(trust_env=False)，避免被容器HTTP_PROXY误劫持",

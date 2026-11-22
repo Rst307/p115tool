@@ -1,6 +1,16 @@
 # 当前插件范围与验证
 
-更新时间：2026-11-22（Asia/Shanghai），版本0.2.70。
+更新时间：2026-11-22（Asia/Shanghai），版本0.2.71。
+
+## 0.2.71 虚拟副本校验切换至 proapi `fs_files_app` 并在日志附带版本号
+
+- **避开 `webapi.115.com/files` 风控与卡顿**（`p115tool/client.py`、`p115tool/api.py`）：
+  - `P115ClientManager.list_verified_folder()` 在 Cookie 模式下优先调用 `fs_files_app`（走与 `download_url` 相同的 `https://proapi.115.com` 网关），避免 `webapi.115.com/files` 被风控或卡死拖垮全局 SDK 锁。
+  - 将 `fs_files_app` 纳入只读低延迟节流、Cookie 续登重试、瞬时抖动重试与脱敏失败日志白名单。
+- **日志统一附带版本号**（`p115tool/models.py`、`p115tool/api.py`、`p115tool/client.py`、`p115tool/playback.py`、`p115tool/emby_proxy.py`）：
+  - 在启动、播放、Emby 本地代理与 SDK 等锁/慢调用日志中输出 `[v0.2.71]`，便于现场立刻核对运行版本。
+
+验证：`test_playback_concurrency`、`test_emby_proxy`、`test_native_package` 共 26 项定向回归全部通过，未运行真实媒体联调。
 
 ## 0.2.70 将 115 SDK 底层传输切换为纯 HTTP/1.1 直连 httpx.Client
 

@@ -3,7 +3,7 @@ from contextlib import contextmanager
 import threading
 import time
 import uuid
-from .models import MissingFile, RemoteError, SafetyError, ToolError
+from .models import MissingFile, PLUGIN_VERSION, RemoteError, SafetyError, ToolError
 try:
     from app.log import logger
 except ModuleNotFoundError:
@@ -534,7 +534,7 @@ class PlaybackManager:
                     if target is not None else self.direct_pickcode(media_id, respect_selection=not native))
         kind = target['kind'] if target is not None else 'UNKNOWN'
         stage = target['stage'] if target is not None else 'UNKNOWN'
-        logger.info(f'115播放流程：媒体={media_id}，模式={mode}，类型={kind or "NONE"}，存储状态={stage or "NONE"}，直链快速路径={pickcode is not None}')
+        logger.info(f'[v{PLUGIN_VERSION}] 115播放流程：媒体={media_id}，模式={mode}，类型={kind or "NONE"}，存储状态={stage or "NONE"}，直链快速路径={pickcode is not None}')
         if pickcode is not None:
             # Actual files can get a link while another resource is transferring.
             # Recheck before returning in case conversion crossed its delete checkpoint.

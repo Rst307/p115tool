@@ -6,7 +6,7 @@ import secrets
 from fastapi import Request, HTTPException
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response
-from .models import MissingFile, ToolError
+from .models import MissingFile, PLUGIN_VERSION, ToolError
 try:
     from app.log import logger
 except ModuleNotFoundError:
@@ -72,7 +72,7 @@ SAFETY_REASONS={
 }
 
 ALLOWED_OPERATIONS = frozenset({
-    'fs_file', 'fs_files', 'fs_mkdir', 'share_snap', 'share_receive', 'download_url',
+    'fs_file', 'fs_files', 'fs_files_app', 'fs_mkdir', 'share_snap', 'share_receive', 'download_url',
     'share_download_url', 'share_send', 'share_update', 'fs_delete', 'recyclebin_list', 'recyclebin_clean',
 })
 COPY_STATES = frozenset({
@@ -111,7 +111,7 @@ def log_failure(exc,context='playback'):
     copy_state=copy_state if type(copy_state) is str and copy_state in COPY_STATES else 'none'
     # Never log the request, token, URL, or exception text/upstream payload.
     label='115回收站处理失败' if context=='recycle' else '115播放失败'
-    logger.warning(f'{label}：接口={operation}，类型={type(exc).__name__}，SDK异常={sdk_error}，上游错误码={code}，原因={reason}，副本状态={copy_state}{_bug_location(exc)}')
+    logger.warning(f'[v{PLUGIN_VERSION}] {label}：接口={operation}，类型={type(exc).__name__}，SDK异常={sdk_error}，上游错误码={code}，原因={reason}，副本状态={copy_state}{_bug_location(exc)}')
 
 PLAYBACK_SLOW_SECONDS = 10
 SINGLEFLIGHT_MAX_AGE = 60
@@ -137,7 +137,7 @@ async def resolve_playback(service, token, ua, rid='-'):
     finally:
         slow.cancel()
     elapsed = (loop.time() - started) * 1000
-    logger.info(f'115播放[{rid}] 解析结束：状态={status}，耗时={elapsed:.1f}ms')
+    logger.info(f'[v{PLUGIN_VERSION}] 115播放[{rid}] 解析结束：状态={status}，耗时={elapsed:.1f}ms')
     return status, location, elapsed
 
 

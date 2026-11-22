@@ -18,6 +18,7 @@ from starlette.responses import Response, StreamingResponse
 from starlette.routing import Route
 
 from .api import TOKEN_RE, log_failure
+from .models import PLUGIN_VERSION
 
 try:
     from app.log import logger
@@ -196,18 +197,18 @@ def build_proxy_app(service, emby_url, direct_path=False, upstream_client=None):
                 location = relayed[0]
         if location:
             elapsed = (time.monotonic() - started) * 1000
-            logger.info(f'115 Emby本地代理：stream复用HEAD直链返回302，耗时={elapsed:.1f}ms')
+            logger.info(f'[v{PLUGIN_VERSION}] 115 Emby本地代理：stream复用HEAD直链返回302，耗时={elapsed:.1f}ms')
         else:
             try:
                 location = await run_in_threadpool(service.play, token, ua)
             except Exception as exc:
                 log_failure(exc)
-                logger.warning('115 Emby本地代理：stream 302取链失败，回退至Emby上游')
+                logger.warning(f'[v{PLUGIN_VERSION}] 115 Emby本地代理：stream 302取链失败，回退至Emby上游')
                 return await forward_streaming(request, client)
             if request.method == 'HEAD':
                 remember_stream_head(token, ua, location)
             elapsed = (time.monotonic() - started) * 1000
-            logger.info(f'115 Emby本地代理：stream 302直链返回，耗时={elapsed:.1f}ms')
+            logger.info(f'[v{PLUGIN_VERSION}] 115 Emby本地代理：stream 302直链返回，耗时={elapsed:.1f}ms')
         return Response(
             status_code=302,
             headers={
@@ -349,7 +350,7 @@ class EmbyProxyServer:
         while not getattr(self._server, 'started', False) and not getattr(self._server, 'should_exit', False):
             await asyncio.sleep(0.05)
         if getattr(self._server, 'started', False):
-            logger.info(f'115 Emby本地代理已启动：监听端口={self.config.emby_proxy_port}')
+            logger.info(f'[v{PLUGIN_VERSION}] 115 Emby本地代理已启动：监听端口={self.config.emby_proxy_port}')
         self._ready.set()
 
     def close(self):

@@ -1,6 +1,8 @@
 from __future__ import annotations
 from dataclasses import dataclass
 
+PLUGIN_VERSION = '0.2.71'
+
 class ToolError(RuntimeError): pass
 class SafetyError(ToolError): pass
 class RemoteError(ToolError): pass
