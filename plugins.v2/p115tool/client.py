@@ -22,10 +22,9 @@ OPEN_READ_METHODS = {
 COOKIE_RETRY_READS = frozenset(OPEN_READ_METHODS) | {'share_snap', 'share_download_url', 'recyclebin_list'}
 TRANSIENT_RETRY_READS = frozenset(OPEN_READ_METHODS)
 TRANSIENT_SDK_ERRORS = frozenset({
-    'TimeoutError', 'ReadTimeout', 'ConnectTimeout', 'WriteTimeout', 'PoolTimeout',
     'ConnectError', 'ConnectionError', 'ConnectionResetError', 'ConnectionAbortedError',
-    'BrokenPipeError', 'RemoteProtocolError', 'ProtocolError', 'SSLError', 'OSError',
-    'ReadError', 'HTTPError', 'IncompleteRead',
+    'BrokenPipeError', 'RemoteProtocolError', 'ProtocolError', 'SSLError',
+    'ReadError', 'IncompleteRead',
 })
 COOKIE_RENEWAL_COOLDOWN = 1800
 QR_PRIMARY = ('qandroid', 'M1')
@@ -83,6 +82,7 @@ class P115ClientManager:
     def __init__(self, config, sdk=None):
         self.config = config
         self._lock = threading.RLock()
+        self._lock_owner = None
         self._sdk = sdk
         self._moviepilot_storage = None
         self._last_request = 0.0
@@ -291,7 +291,15 @@ class P115ClientManager:
         )
 
     def call(self, method, *args, **kwargs):
-        with self._lock:
+        acquired = self._lock.acquire(timeout=2.0)
+        if not acquired:
+            owner = self._lock_owner or 'unknown'
+            logger.warning(f'115 SDK等待全局调用锁：待执行接口={method}，当前占用={owner}')
+            self._lock.acquire()
+        prev_owner = self._lock_owner
+        self._lock_owner = f'{threading.current_thread().name}:{method}'
+        started = time.monotonic()
+        try:
             try:
                 return self._call_once(method, args, kwargs)
             except RemoteError as exc:
@@ -306,6 +314,12 @@ class P115ClientManager:
                     time.sleep(0.3)
                     return self._call_once(method, args, kwargs)
                 raise
+        finally:
+            elapsed = time.monotonic() - started
+            if elapsed >= 5.0:
+                logger.warning(f'115 SDK慢调用：接口={method}，耗时={elapsed:.1f}s')
+            self._lock_owner = prev_owner
+            self._lock.release()
 
     def _call_once(self, method, args, kwargs):
         if self._closed:

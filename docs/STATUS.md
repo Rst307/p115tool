@@ -1,6 +1,15 @@
 # 当前插件范围与验证
 
-更新时间：2026-11-22（Asia/Shanghai），版本0.2.66。
+更新时间：2026-11-22（Asia/Shanghai），版本0.2.67。
+
+## 0.2.67 消除 115 超时持锁雪崩并补充 SDK 等锁/慢调用诊断
+
+- **防止 30s+30s=60s 持锁雪崩**（`p115tool/client.py`）：`TRANSIENT_SDK_ERRORS` 仅保留瞬时断连错误（`ConnectionResetError`、`RemoteProtocolError` 等），移除 `*Timeout*`，避免单次 115 接口超时后再持全局 SDK 锁与资源锁二次死等 30 秒。
+- **可观测性增强**（`p115tool/client.py`、`p115tool/emby_proxy.py`）：
+  - `P115ClientManager.call` 等待全局锁超过 2 秒时记录占用线程与接口名；单次调用超过 5 秒时记录脱敏慢调用警告。
+  - Emby 本地代理 `stream` 取链失败时调用 `log_failure(exc)` 输出固定脱敏原因码。
+
+验证：`test_cookie_renewal`、`test_storage.ManagerTests`、`test_emby_proxy`、`test_native_package` 共 31 项定向回归全部通过，未运行真实媒体联调。
 
 ## 0.2.66 Emby 本地 302 代理改为纯非阻塞 PlaybackInfo + 按需 stream 302
 

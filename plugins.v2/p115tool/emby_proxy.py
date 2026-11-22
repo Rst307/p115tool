@@ -17,7 +17,7 @@ from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
 from starlette.routing import Route
 
-from .api import TOKEN_RE
+from .api import TOKEN_RE, log_failure
 
 try:
     from app.log import logger
@@ -200,7 +200,8 @@ def build_proxy_app(service, emby_url, direct_path=False, upstream_client=None):
         else:
             try:
                 location = await run_in_threadpool(service.play, token, ua)
-            except Exception:
+            except Exception as exc:
+                log_failure(exc)
                 logger.warning('115 Emby本地代理：stream 302取链失败，回退至Emby上游')
                 return await forward_streaming(request, client)
             if request.method == 'HEAD':
