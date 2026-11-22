@@ -1,6 +1,20 @@
 # 当前插件范围与验证
 
-更新时间：2026-11-22（Asia/Shanghai），版本0.2.62。
+更新时间：2026-11-22（Asia/Shanghai），版本0.2.63。
+
+## 0.2.63 新增内置 Emby 本地 302 代理
+
+针对外网经 Cloudflare Tunnel 等隧道访问 Emby + MoviePilot 需要多趟跨国往返导致起播慢的问题，新增默认关闭的内置本地 Emby 302 代理：
+
+- **内置本地代理服务**（`p115tool/emby_proxy.py`、`p115tool/config.py`、`p115tool/service.py`）：
+  - 新增配置项 `emby_proxy_enabled`（默认关闭）、`emby_url`（内网 Emby 地址）、`emby_proxy_port`（默认 `8095`）、`emby_proxy_direct_path`（默认开启）。
+  - 普通 Emby 请求（首页、海报、字幕、进度、非本插件本地媒体）透明流式转发至配置的 `emby_url`，无 SSRF 风险。
+  - 拦截 `PlaybackInfo`：当 `MediaSources[i].Path` 精确匹配本插件 `/api/v1/plugin/P115Tool/play/{token}` 时，在本地进程内直接调用 `service.play(token, ua)` 替换为 115 CDN 直链返回客户端（换链失败时安全保留原地址不阻断响应），让 SenPlayer 等客户端只走 1 趟隧道即可直连国内 115 CDN。
+  - 同时拦截 `/Videos/{id}/stream` 返回 `302` 直链，兼容官方 Emby App / Infuse / VidHub / 网页客户端；停机时优雅释放端口，日志严格脱敏不输出 token 或直链。
+- **前端配置入口**（`frontend/src/Config.vue`）：
+  - 在「STRM」设置页新增「Emby 本地 302 代理」配置区块，并重新构建同步原生联邦前端资源。
+
+验证：新增 [test_emby_proxy.py](file:///d:/ImportantFileFolder/emby/mp/plugins/p115Tool/tests/test_emby_proxy.py) 覆盖配置校验、`PlaybackInfo` 直链替换、`/Videos/.../stream` 302 跳转、普通媒体透传、失败回退、日志脱敏与真实端口启停；`test_emby_proxy`、`test_native_package`、`test_page_open` 共 9 项定向测试全部通过，未运行真实媒体联调。
 
 ## 0.2.62 优化 302 播放起播速度
 

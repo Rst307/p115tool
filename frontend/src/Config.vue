@@ -10,7 +10,7 @@ const initial=props.initialConfig
 let sources=initial.source_cids || []
 try { if(initial.source_cids_json) sources=JSON.parse(initial.source_cids_json) } catch {}
 const cloneSources=items=>Array.isArray(items)?items.map(item=>typeof item==='object'?{...item}:item):[]
-const config=ref({enabled:false,use_moviepilot_auth:false,strm_dir:'/opt/emby/strm',public_url:'http://localhost:3000',scheduled:false,organize_scheduled:false,organize_time:'02:00',organize_target_cid:'',auto_after_transfer:false,scan_time:'03:00',request_timeout:30,temp_cid:'',temp_days:7,temp_cleanup:true,recycle_purge:false,recycle_password:'',recycle_empty_scheduled:false,recycle_empty_time:'04:00',...Object.fromEntries(['enabled','use_moviepilot_auth','strm_dir','public_url','scheduled','organize_scheduled','organize_time','organize_target_cid','auto_after_transfer','scan_time','request_timeout','temp_cid','temp_days','temp_cleanup','recycle_purge','recycle_password','recycle_empty_scheduled','recycle_empty_time'].filter(k=>initial[k]!==undefined).map(k=>[k,initial[k]])),source_cids:cloneSources(sources),organize_cids:cloneSources(initial.organize_cids)})
+const config=ref({enabled:false,use_moviepilot_auth:false,strm_dir:'/opt/emby/strm',public_url:'http://localhost:3000',scheduled:false,organize_scheduled:false,organize_time:'02:00',organize_target_cid:'',auto_after_transfer:false,scan_time:'03:00',request_timeout:30,temp_cid:'',temp_days:7,temp_cleanup:true,recycle_purge:false,recycle_password:'',recycle_empty_scheduled:false,recycle_empty_time:'04:00',emby_proxy_enabled:false,emby_url:'',emby_proxy_port:8095,emby_proxy_direct_path:true,...Object.fromEntries(['enabled','use_moviepilot_auth','strm_dir','public_url','scheduled','organize_scheduled','organize_time','organize_target_cid','auto_after_transfer','scan_time','request_timeout','temp_cid','temp_days','temp_cleanup','recycle_purge','recycle_password','recycle_empty_scheduled','recycle_empty_time','emby_proxy_enabled','emby_url','emby_proxy_port','emby_proxy_direct_path'].filter(k=>initial[k]!==undefined).map(k=>[k,initial[k]])),source_cids:cloneSources(sources),organize_cids:cloneSources(initial.organize_cids)})
 config.value.cookie_auto_refresh = initial.cookie_auto_refresh === true
 const cookieDraft=ref(''), cookieChanged=ref(false), cookieSaved=ref(Boolean(initial.cookie_set || initial.cookie))
 const renewalSeed=ref(''), renewalSeedChanged=ref(false), seedSaved=ref(initial.cookie_renewal_seed_set===true)
@@ -220,6 +220,16 @@ async function save() {
     <p class="p115-note mb-4">默认关闭。开启并保存后，检测MoviePilot成功整理到115，连续事件合并等待10秒，再扫描上方STRM媒体库。请确保生成源包含整理目标；扫描期间收到的新事件会补扫一次。</p>
     <v-switch v-model="config.scheduled" label="每天自动生成STRM" color="primary" hide-details class="mb-4"/>
     <div class="p115-grid"><v-text-field v-model="config.scan_time" :disabled="!config.scheduled" type="time" label="每日生成时间" hint="北京时间" persistent-hint variant="outlined" density="comfortable"/></div>
+  </section>
+  <section v-if="tab==='strm'" class="p115-section">
+    <div class="p115-section-heading"><div><h3>Emby 本地 302 代理</h3><p>在家内网直接把 STRM 换算成 115 直链返回给客户端，外网不再二次访问 MoviePilot。</p></div></div>
+    <v-switch v-model="config.emby_proxy_enabled" label="启用 Emby 本地 302 代理" color="primary" hide-details class="mb-3"/>
+    <div class="p115-grid">
+      <v-text-field v-model="config.emby_url" :disabled="!config.emby_proxy_enabled" label="内网 Emby 地址" placeholder="http://192.168.0.2:8096" variant="outlined" density="comfortable" hint="填写 MoviePilot 容器能访问到的 Emby 地址。" persistent-hint/>
+      <v-text-field v-model="config.emby_proxy_port" :disabled="!config.emby_proxy_enabled" type="number" min="1024" max="65535" label="代理监听端口" variant="outlined" density="comfortable" hint="默认 8095；Docker bridge 模式需映射此端口。" persistent-hint/>
+    </div>
+    <v-switch v-model="config.emby_proxy_direct_path" :disabled="!config.emby_proxy_enabled" label="PlaybackInfo 直接替换 115 直链（推荐，SenPlayer 单次往返起播）" color="primary" hide-details class="mt-4"/>
+    <p class="p115-note mt-3">开启后请把 Cloudflare Tunnel / 反代原来指向 Emby（8096）的目标改为此代理端口（如 8095）。STRM 文件可继续保留内网 MoviePilot 地址，外网起播只走 1 趟隧道、视频流直连 115 CDN。</p>
   </section>
   <section v-if="tab==='organize'" class="p115-section">
     <h3>整理目标媒体库</h3>

@@ -32,6 +32,10 @@ class Config:
     recycle_password: str = ''
     recycle_empty_scheduled: bool = False
     recycle_empty_time: str = '04:00'
+    emby_proxy_enabled: bool = False
+    emby_url: str = ''
+    emby_proxy_port: int = 8095
+    emby_proxy_direct_path: bool = True
     allowed_cdn_suffixes: list = field(default_factory=lambda: ['115.com','115cdn.com','115cdn.net','115cdn.cn'])
     media_extensions: list = field(default_factory=lambda: ['.mkv','.mp4','.avi','.mov','.ts','.m2ts','.iso','.wmv','.flv','.m4v','.mpg','.mpeg'])
 
@@ -42,8 +46,13 @@ class Config:
         if 'source_cids_json' in data:
             data['source_cids'] = json.loads(data.pop('source_cids_json'))
         data = {k:v for k,v in data.items() if k in {f.name for f in fields(cls)}}
-        for k in ('enabled','cookie_auto_refresh','use_moviepilot_auth','scheduled','organize_scheduled','auto_after_transfer','temp_cleanup','recycle_purge','recycle_empty_scheduled'):
+        for k in ('enabled','cookie_auto_refresh','use_moviepilot_auth','scheduled','organize_scheduled','auto_after_transfer','temp_cleanup','recycle_purge','recycle_empty_scheduled','emby_proxy_enabled','emby_proxy_direct_path'):
             if k in data and type(data[k]) is not bool: raise ValueError('Invalid boolean')
+        if 'emby_proxy_port' in data:
+            v=data['emby_proxy_port']
+            if isinstance(v,str) and re.fullmatch(r'\d{1,5}',v): v=int(v)
+            if type(v) is not int or not 1024<=v<=65535: raise ValueError('Invalid emby proxy port')
+            data['emby_proxy_port']=v
         if 'request_timeout' in data:
             v=data['request_timeout']
             if isinstance(v,str) and re.fullmatch(r'\d{1,3}',v): v=int(v)
@@ -62,8 +71,15 @@ class Config:
             raise ValueError('Invalid temporary directory')
         if isinstance(cfg.temp_days,str) and re.fullmatch(r'\d{1,3}',cfg.temp_days): cfg.temp_days=int(cfg.temp_days)
         if type(cfg.temp_days) is not int or not 1<=cfg.temp_days<=365: raise ValueError('Invalid retention days')
-        for k in ('cookie','cookie_renewal_seed','data_dir','strm_dir','public_url','playback_prefix','scan_time','organize_time'):
+        for k in ('cookie','cookie_renewal_seed','data_dir','strm_dir','public_url','playback_prefix','scan_time','organize_time','emby_url'):
             if not isinstance(getattr(cfg,k),str): raise ValueError('Invalid text')
+        cfg.emby_url=cfg.emby_url.strip().rstrip('/')
+        if cfg.emby_proxy_enabled and not cfg.emby_url:
+            raise ValueError('Emby URL required when proxy is enabled')
+        if cfg.emby_url:
+            eurl=urlsplit(cfg.emby_url)
+            if eurl.scheme not in ('http','https') or not eurl.hostname or eurl.username or eurl.password or eurl.query or eurl.fragment or any(ord(c)<33 for c in cfg.emby_url):
+                raise ValueError('Invalid Emby URL')
         if cfg.cookie_auto_refresh and not cfg.use_moviepilot_auth:
             primary = cookie_identity(cfg.cookie)
             seed = cookie_identity(cfg.cookie_renewal_seed)

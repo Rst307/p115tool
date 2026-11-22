@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "实际与虚拟存储、分享临时转存、分类STRM及302播放",
     "labels": "115,STRM,媒体管理",
-    "version": "0.2.62",
+    "version": "0.2.63",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.2.63": "新增默认关闭的「Emby本地302代理」：内置轻量代理端口（默认8095）转发至内网Emby，在PlaybackInfo中直接将本插件STRM内网地址本地换算为115 CDN直链返回（同时兼容/Videos/.../stream 302跳转），外网起播仅走1趟隧道、无需暴露MoviePilot公网端口，STRM可继续保留内网地址",
       "v0.2.62": "优化302起播速度：已有虚拟副本通过单次fs_files祖先校验合并目录核实与文件列表（异常时回退stat区分缺失与篡改），只读播放接口最小请求间隔从200ms优化为50ms（写操作保持200ms），并新增同UA的HEAD→GET 15秒一次性302直链接力，消除播放器探测后紧跟播放的重复取链耗时",
       "v0.2.61": "修复曾更换STRM输出目录导致「仅更新播放地址」对旧目录记录报Unsafe output target失败：自动回退查找当前STRM目录下对应的relative_path文件，存在则原地更新并修正索引路径，不存在则安全跳过",
       "v0.2.60": "修复本地更新STRM播放地址时部分旧文件报输出冲突：支持兼容升级无摘要记录的旧版内网IP/旧域名STRM（严格校验记录路径与精确token），自动跳过已被新文件替代的过期索引记录，并补充脱敏汇总诊断日志",

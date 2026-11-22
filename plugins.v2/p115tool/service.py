@@ -69,6 +69,9 @@ class Service:
             self.storage=StorageManager(self)
             from .telegram import TelegramMonitor
             self.telegram=TelegramMonitor(self)
+            from .emby_proxy import EmbyProxyServer
+            self.emby_proxy=EmbyProxyServer(self)
+            self.emby_proxy.start()
         except Exception:
             if self._db is not None: self._db.close()
             self.client.close(); self._file_lock.close(); raise
@@ -475,6 +478,7 @@ class Service:
         from .iso_transfer import unregister
         unregister(self)
         if worker and worker is not threading.current_thread(): worker.join()
+        if hasattr(self,'emby_proxy'): self.emby_proxy.close()
         self.telegram.close()
         self.storage.close()
         with self._lock:
