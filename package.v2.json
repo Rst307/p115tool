@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "实际与虚拟存储、分享临时转存、分类STRM及302播放",
     "labels": "115,STRM,媒体管理",
-    "version": "0.2.64",
+    "version": "0.2.65",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.2.65": "修复Emby本地代理在PlaybackInfo阶段用API UA预热导致与随后不同播放器UA的stream请求争抢同一虚拟资源锁的问题：PlaybackInfo仅对未转存的冷虚拟资源后台预转存副本，不对实际源或已就绪副本抢锁，并支持stream自身HEAD→GET 15秒0ms直链接力",
       "v0.2.64": "进一步提速Emby本地302代理起播：PlaybackInfo默认0ms立即放行并后台并行预热115直链，让115取链与隧道网络往返并行执行；随后的stream请求直接复用预热结果0ms返回302，同时支持同步替换Path模式下也复用于stream避免重复取链",
       "v0.2.63": "新增默认关闭的「Emby本地302代理」：内置轻量代理端口（默认8095）转发至内网Emby，在PlaybackInfo中直接将本插件STRM内网地址本地换算为115 CDN直链返回（同时兼容/Videos/.../stream 302跳转），外网起播仅走1趟隧道、无需暴露MoviePilot公网端口，STRM可继续保留内网地址",
       "v0.2.62": "优化302起播速度：已有虚拟副本通过单次fs_files祖先校验合并目录核实与文件列表（异常时回退stat区分缺失与篡改），只读播放接口最小请求间隔从200ms优化为50ms（写操作保持200ms），并新增同UA的HEAD→GET 15秒一次性302直链接力，消除播放器探测后紧跟播放的重复取链耗时",

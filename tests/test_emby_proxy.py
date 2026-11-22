@@ -111,7 +111,7 @@ class EmbyProxyTests(unittest.TestCase):
             self.assertEqual(local_stream.status_code, 200)
             self.assertEqual(local_stream.content, b'local-video-bytes')
 
-    def test_playback_info_prefetch_reused_by_stream_without_second_play(self):
+    def test_playback_info_does_not_contend_and_stream_head_relays_to_get(self):
         service = FakeService()
         lan_url = f'http://192.168.0.2:3000/api/v1/plugin/P115Tool/play/{TOKEN}'
 
@@ -123,17 +123,27 @@ class EmbyProxyTests(unittest.TestCase):
         upstream = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         app = build_proxy_app(service, 'http://192.168.0.2:8096', direct_path=False, upstream_client=upstream)
         with TestClient(app) as client:
-            pb = client.post('/emby/Items/42/PlaybackInfo', headers={'User-Agent': 'SenPlayer/2.0'})
+            # PlaybackInfo uses API UA and passes through immediately without calling service.play.
+            pb = client.post('/emby/Items/42/PlaybackInfo', headers={'User-Agent': 'SenPlayer-API/2.0'})
             self.assertEqual(pb.status_code, 200)
             self.assertEqual(pb.json()['MediaSources'][0]['Path'], lan_url)
-            stream = client.get(
+            self.assertEqual(service.calls, [])
+
+            # Player stream HEAD resolves once with player UA, then GET reuses it with 0 extra calls.
+            head = client.head(
                 '/emby/Videos/42/stream?MediaSourceId=ms-1',
-                headers={'User-Agent': 'SenPlayer/2.0'},
+                headers={'User-Agent': 'SenPlayer-MPV/2.0'},
                 follow_redirects=False,
             )
+            stream = client.get(
+                '/emby/Videos/42/stream?MediaSourceId=ms-1',
+                headers={'User-Agent': 'SenPlayer-MPV/2.0'},
+                follow_redirects=False,
+            )
+        self.assertEqual(head.status_code, 302)
         self.assertEqual(stream.status_code, 302)
         self.assertEqual(stream.headers['location'], DIRECT_LINK)
-        self.assertEqual(service.calls, [(TOKEN, 'SenPlayer/2.0')])
+        self.assertEqual(service.calls, [(TOKEN, 'SenPlayer-MPV/2.0')])
 
     def test_playback_info_failure_keeps_original_path(self):
         service = FakeService(fail=True)

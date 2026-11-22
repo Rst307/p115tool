@@ -1,6 +1,14 @@
 # 当前插件范围与验证
 
-更新时间：2026-11-22（Asia/Shanghai），版本0.2.64。
+更新时间：2026-11-22（Asia/Shanghai），版本0.2.65。
+
+## 0.2.65 修复 Emby 本地代理 PlaybackInfo 预热与 stream 异 UA 争抢资源锁
+
+- 针对 SenPlayer 等客户端 `PlaybackInfo` 与 `stream` 使用不同 `User-Agent` 导致后台预热任务占用虚拟资源锁反过来阻塞 `stream` 请求的问题，优化 `p115tool/emby_proxy.py`：
+  - `PlaybackInfo` 0ms 放行后，仅对**尚无 `READY` 副本的冷虚拟资源**在后台预热 `ensure_copy`（只提前转存，不调用 `normal_link`）；对实际资源和已就绪 `READY` 副本不再在 `PlaybackInfo` 阶段抢锁。
+  - 在 `/Videos/.../stream` 增加同 `(token, player_ua)` 的 `HEAD` → `GET` 15 秒一次性 302 接力，消除播放器探测后拉流的二次取链。
+
+验证：[test_emby_proxy.py](file:///d:/ImportantFileFolder/emby/mp/plugins/p115Tool/tests/test_emby_proxy.py) 与 `test_native_package` 共 9 项定向测试全部通过，未运行真实媒体联调。
 
 ## 0.2.64 Emby 本地 302 代理改为 PlaybackInfo 异步并行预热
 
