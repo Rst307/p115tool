@@ -109,6 +109,21 @@ class PlaybackEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r.status_code for r in responses], [302, 302])
         self.assertEqual(len(self.calls), 2)
 
+    async def test_head_to_get_one_shot_relay_skips_second_lookup(self):
+        self.release.set()
+        head = await self.client.head('/play/' + TOKEN, headers={'User-Agent': 'SenPlayer'})
+        self.assertEqual(head.status_code, 302)
+        self.assertEqual(len(self.calls), 1)
+        # Immediate GET with same UA consumes the one-shot HEAD relay without a second lookup.
+        first_get = await self.client.get('/play/' + TOKEN, headers={'User-Agent': 'SenPlayer'})
+        self.assertEqual(first_get.status_code, 302)
+        self.assertEqual(first_get.headers['location'], LINK)
+        self.assertEqual(len(self.calls), 1)
+        # Subsequent GET is fresh (one-shot relay already consumed).
+        second_get = await self.client.get('/play/' + TOKEN, headers={'User-Agent': 'SenPlayer'})
+        self.assertEqual(second_get.status_code, 302)
+        self.assertEqual(len(self.calls), 2)
+
 
 class ActualPlaybackTests(unittest.TestCase):
     def setUp(self):
@@ -376,3 +391,37 @@ class VirtualPlaybackEfficiencyTests(unittest.TestCase):
             t_play.join(4)
         self.assertTrue(completed_during_cleanup, 'Virtual playback was blocked by cleanup of another resource')
         self.assertEqual(warm_result, [LINK + '/pc-b'])
+
+    def test_list_verified_folder_uses_single_fs_files_roundtrip_and_detects_fallback(self):
+        from p115tool.client import P115ClientManager
+        from p115tool.models import SafetyError
+        sdk_calls = []
+
+        class SDK:
+            def __init__(self, fallback=False):
+                self.fallback = fallback
+
+            def fs_files(self, payload, timeout=30):
+                sdk_calls.append(('fs_files', payload['cid']))
+                if self.fallback:
+                    return {'state': True, 'path': [{'cid': '0', 'name': '根目录'}], 'data': [], 'count': 0}
+                return {
+                    'state': True,
+                    'path': [
+                        {'cid': '0', 'name': '根目录'},
+                        {'cid': '90', 'name': 'temp'},
+                        {'cid': '101', 'name': 'p115tool-a'},
+                    ],
+                    'data': [{'fid': '201', 'n': 'a.mkv', 's': 32, 'sha': 'A' * 40, 'cid': '101', 'pc': 'pc-a'}],
+                    'count': 1,
+                }
+
+        mgr = P115ClientManager(self.service.config, sdk=SDK(fallback=False))
+        files = mgr.list_verified_folder('101', '90', 'p115tool-a')
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].pickcode, 'pc-a')
+        self.assertEqual(sdk_calls, [('fs_files', '101')])
+
+        mgr_fallback = P115ClientManager(self.service.config, sdk=SDK(fallback=True))
+        with self.assertRaises(SafetyError):
+            mgr_fallback.list_verified_folder('101', '90', 'p115tool-a')

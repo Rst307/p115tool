@@ -310,7 +310,8 @@ class P115ClientManager:
     def _call_once(self, method, args, kwargs):
         if self._closed:
             raise RemoteError('115 client is stopped')
-        wait = 0.2 - (time.monotonic() - self._last_request)
+        min_gap = 0.05 if method in OPEN_READ_METHODS else 0.2
+        wait = min_gap - (time.monotonic() - self._last_request)
         if wait > 0:
             time.sleep(wait)
         try:
@@ -378,6 +379,54 @@ class P115ClientManager:
         if not parts and cid != '0':
             raise SafetyError('Directory ancestors unavailable')
         return '/' + '/'.join(parts)
+
+    def list_verified_folder(self, cid, expected_parent, expected_name):
+        """Verify folder identity from fs_files ancestors and list contents in one round-trip."""
+        offset = 0
+        seen = set()
+        expected_count = None
+        results = []
+        while True:
+            resp = check_response(self.call("fs_files", {"cid": cid, "offset": offset, "limit": 1000, "cur": 1, "show_dir": 1}))
+            directory = self._directory_path(resp, str(cid))
+            trail = resp.get("path", [])
+            if (not isinstance(trail, list) or len(trail) < 2
+                    or str(trail[-1].get("cid")) != str(cid)
+                    or (trail[-1].get("name") or trail[-1].get("n")) != expected_name
+                    or str(trail[-2].get("cid")) != str(expected_parent)):
+                raise SafetyError("Temporary directory identity changed")
+            rows = resp.get("data")
+            if not isinstance(rows, list):
+                raise RemoteError("Malformed directory response")
+            if self.config.use_moviepilot_auth:
+                count = resp.get('count')
+                if (type(count) not in (str, int) or not str(count).isdigit()
+                        or (expected_count is not None and expected_count != int(count))
+                        or offset + len(rows) > int(count)):
+                    raise RemoteError('Incomplete directory pagination')
+                expected_count = int(count)
+            for row in rows:
+                name = row.get('n') or row.get('fn') or row.get('file_name') or row.get('name') or row.get('category_name')
+                from .strm import safe_parts
+                if not isinstance(name, str) or len(safe_parts(name)) != 1:
+                    raise SafetyError('Invalid listed file name')
+                if self.config.use_moviepilot_auth:
+                    category = str(row.get('fc', ''))
+                    if category not in ('0', '1'):
+                        raise RemoteError('Unsupported 115 file metadata shape')
+                    row = {**row, 'is_directory': category == '0'}
+                file = normalize_file(row, str(cid), directory.rstrip('/') + '/' + name)
+                if file.file_id in seen:
+                    raise RemoteError("Directory changed while paging; retry scan")
+                seen.add(file.file_id)
+                results.append(file)
+            offset += len(rows)
+            count = int(resp.get("count", offset))
+            if offset >= count:
+                break
+            if not rows:
+                raise RemoteError("Incomplete directory pagination")
+        return results
 
     def list_files(self, cid="0"):
         offset = 0

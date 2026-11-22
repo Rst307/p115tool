@@ -161,6 +161,20 @@ class PlaybackManager:
         self.client = storage.client
         self.config = storage.config
 
+    def _list_verified_copy_folder(self, copy):
+        """List copy folder and verify its identity in one fs_files round-trip when supported."""
+        fast_list = getattr(self.client, 'list_verified_folder', None)
+        if callable(fast_list):
+            try:
+                return fast_list(copy['folder_cid'], copy['root_cid'], copy['folder_name'])
+            except SafetyError:
+                # 115 fs_files falls back to root when a folder was deleted.
+                # Call stat() to distinguish MissingFile (recreate) from SafetyError (tampered).
+                self.validate_folder(copy)
+                raise
+        self.validate_folder(copy)
+        return list(self.client.list_files(copy['folder_cid']))
+
     def validate_folder(self, copy):
         folder = self.client.stat(copy['folder_cid'])
         if not folder.is_dir or folder.parent_id != copy['root_cid'] or folder.name != copy['folder_name']:
@@ -335,14 +349,13 @@ class PlaybackManager:
                 if copy and copy['stage'] == 'READY':
                     started = time.monotonic()
                     try:
-                        self.validate_folder(copy)
+                        contents = self._list_verified_copy_folder(copy)
                     except MissingFile:
                         self._verify_missing_ready_copy(copy, row)
                         logger.info(f'115播放流程：媒体={media_id}，步骤=已有副本目录丢失，准备重建转存')
                         copy = self.create_copy_folder(media_id, copy['root_cid'])
                         fresh_folder = True
                         continue
-                    contents = list(self.client.list_files(copy['folder_cid']))
                     if not contents:
                         self._verify_missing_ready_copy(copy, row)
                         logger.info(f'115播放流程：媒体={media_id}，步骤=已有副本文件缺失，准备重新转存')

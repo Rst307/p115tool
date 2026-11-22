@@ -1,6 +1,19 @@
 # 当前插件范围与验证
 
-更新时间：2026-11-21（Asia/Shanghai），版本0.2.61。
+更新时间：2026-11-22（Asia/Shanghai），版本0.2.62。
+
+## 0.2.62 优化 302 播放起播速度
+
+针对虚拟副本热播与播放器先 `HEAD` 探测再 `GET` 起播的重复耗时，在不降低实时安全校验的前提下做三项加速优化：
+
+- **单次 `fs_files` 合并目录身份校验与列文件**（`p115tool/client.py`、`p115tool/playback.py`）：
+  - 新增 `P115ClientManager.list_verified_folder()`，利用 `fs_files` 响应中的 `path` 祖先链一次性核实临时目录 ID、名称和父目录 ID 并返回文件列表，将已有 `READY` 副本的 115 接口调用从 3 次降为 2 次；若遇到目录删除导致的根目录回退或名称/父目录不符，回退调用 `stat()` 精确区分 `MissingFile`（触发重建）与 `SafetyError`（拦截）。
+- **只读播放接口低延迟节流**（`p115tool/client.py`）：
+  - `fs_file`、`fs_files`、`download_url` 的最小请求间隔由 `200ms` 调整为 `50ms`；所有写操作、分享与回收站操作仍维持 `200ms`。
+- **`HEAD` → `GET` 一次性 302 直链接力**（`p115tool/api.py`）：
+  - 同 `(token, User-Agent)` 的独立 `HEAD` 请求返回 302 后，在内存中保留 15 秒供紧随其后的 `GET` 请求消费一次（用完即焚、不落盘、不写日志），消除播放器起播探测后紧跟拉流的重复取链延迟。
+
+验证：新增 `HEAD` → `GET` 一次性接力与 `list_verified_folder` 单次往返/回退检测测试；[test_playback_concurrency.py](file:///d:/ImportantFileFolder/emby/mp/plugins/p115Tool/tests/test_playback_concurrency.py)、`test_moviepilot_auth`、`test_stability`、`test_native_package` 共 35 项定向回归全部通过，未运行真实媒体联调。
 
 ## 0.2.61 修复更换 STRM 输出目录后本地地址更新报 Unsafe output target
 
