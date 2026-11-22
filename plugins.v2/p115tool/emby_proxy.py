@@ -178,7 +178,7 @@ def build_proxy_app(service, emby_url, direct_path=False, upstream_client=None):
         ua = request.headers.get('user-agent', '')
         if len(ua) > 1024 or any(ord(c) < 32 for c in ua):
             return Response(status_code=400, content='Invalid request')
-        status, location, elapsed = await request.app.state.playback_resolver.resolve(service, token, ua, request.method)
+        status, location, elapsed = await request.app.state.playback_resolver.resolve(service, token, ua, request)
         if status != 302:
             logger.warning(f'[v{PLUGIN_VERSION}] 115 Emby本地代理：stream 302取链失败，回退至Emby上游')
             return await forward_streaming(request, client)

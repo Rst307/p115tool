@@ -82,6 +82,7 @@ COPY_STATES = frozenset({
 })
 SDK_ERROR_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,80}')
 TOKEN_RE = re.compile(r'[A-Za-z0-9_-]{20,128}')
+PLAYBACK_ID_RE = re.compile(r'[A-Za-z0-9_-]{1,128}')
 
 
 FILENAME_RE = re.compile(r'[A-Za-z0-9_.-]{1,64}')
@@ -118,6 +119,20 @@ PLAYBACK_SLOW_SECONDS = 10
 SINGLEFLIGHT_MAX_AGE = 60
 HEAD_RELAY_TTL = 15.0
 HEAD_RELAY_MAX = 256
+
+
+def _playback_scope(request):
+    # Emby's play session identifies one stream, even behind a proxy shared by
+    # clients with the same User-Agent. Use these values only as in-memory keys.
+    identifiers = {}
+    for name, value in request.query_params.multi_items():
+        field = name.lower()
+        if field in ('playsessionid', 'deviceid') and PLAYBACK_ID_RE.fullmatch(value):
+            identifiers[field] = value
+    for field in ('playsessionid', 'deviceid'):
+        if field in identifiers:
+            return field, identifiers[field]
+    return 'client', request.client.host if request.client else ''
 
 
 async def resolve_playback(service, token, ua, rid='-'):
@@ -163,9 +178,10 @@ class PlaybackResolver:
                 relay.pop(oldest, None)
         relay[key] = (rid, location, now + HEAD_RELAY_TTL)
 
-    async def resolve(self, service, token, ua, method):
+    async def resolve(self, service, token, ua, request):
         loop = asyncio.get_running_loop()
-        key = (loop, id(service), token, ua)
+        method = request.method
+        key = (loop, id(service), token, ua, _playback_scope(request))
         if method == 'GET':
             relayed = self._head_relay.pop(key, None)
             if relayed is not None and loop.time() < relayed[2]:
@@ -220,7 +236,7 @@ def routes(plugin):
         if getattr(service, '_closed', False):
             log_failure(ToolError('Service stopped'))
             raise HTTPException(503, 'Playback unavailable')
-        status, location, elapsed = await resolver.resolve(service, token, ua, method)
+        status, location, elapsed = await resolver.resolve(service, token, ua, request)
         headers = {'Cache-Control': 'no-store', 'Server-Timing': f'p115-resolve;dur={elapsed:.1f}'}
         if status != 302:
             raise HTTPException(status, 'Playback unavailable', headers=headers)

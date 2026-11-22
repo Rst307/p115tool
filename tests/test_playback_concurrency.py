@@ -144,7 +144,8 @@ class PlaybackEndpointTests(unittest.IsolatedAsyncioTestCase):
                 self.head_entered.set()
             await app(scope, receive, send)
 
-        self.client = AsyncClient(transport=ASGITransport(app=observe), base_url='http://moviepilot.test')
+        self.app = observe
+        self.client = AsyncClient(transport=ASGITransport(app=self.app), base_url='http://moviepilot.test')
         self.addAsyncCleanup(self.client.aclose)
 
     async def requests(self, head_ua='Emby fixture', cancel_get=False):
@@ -179,6 +180,21 @@ class PlaybackEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_different_playback_user_agents_have_separate_lookups(self):
         await self.requests(head_ua='Another player')
         self.assertCountEqual(self.calls, [(TOKEN, 'Emby fixture'), (TOKEN, 'Another player')])
+
+    async def test_same_player_on_different_client_addresses_has_separate_lookups(self):
+        path = '/play/' + TOKEN
+        headers = {'User-Agent': 'Emby fixture'}
+        async with AsyncClient(transport=ASGITransport(app=self.app, client=('192.0.2.2', 1234)),
+                               base_url='http://moviepilot.test') as other:
+            get = asyncio.create_task(self.client.get(path, headers=headers))
+            try:
+                await asyncio.wait_for(self.resolving.wait(), 2)
+                head = asyncio.create_task(other.head(path, headers=headers))
+                await asyncio.wait_for(self.head_entered.wait(), 2)
+            finally:
+                self.release.set()
+            self.assertEqual([response.status_code for response in await asyncio.gather(get, head)], [302, 302])
+        self.assertEqual(self.calls, [(TOKEN, 'Emby fixture')] * 2)
 
     async def test_slow_lookup_is_logged_before_the_http_response_without_identifiers(self):
         warning = asyncio.Event()
@@ -274,7 +290,10 @@ class ActualPlaybackTests(unittest.TestCase):
 class ScanPlaybackTests(unittest.TestCase):
     desktop_ua = 'Desktop player fixture'
     phone_ua = 'Mobile player fixture'
-    links = {desktop_ua: LINK + '/desktop', phone_ua: LINK + '/phone'}
+    tv_ua = 'TV player fixture'
+    tablet_ua = 'Tablet player fixture'
+    links = {desktop_ua: LINK + '/desktop', phone_ua: LINK + '/phone',
+             tv_ua: LINK + '/tv', tablet_ua: LINK + '/tablet'}
 
     def setUp(self):
         from p115client import P115Client
@@ -286,9 +305,8 @@ class ScanPlaybackTests(unittest.TestCase):
         sdk = P115Client('UID=1_A1_1; CID=fixture; SEID=fixture', console_qrcode=False)
         manager = P115ClientManager(config, sdk)
         self.scan_entered = threading.Event()
-        self.download_entered = threading.Event()
         self.release_115 = threading.Event()
-        self.hold_desktop = False
+        self.held_downloads = {}
         default_transport = self.enterContext(patch('urllib3_future_request.request',
                                                      side_effect=AssertionError('Unexpected default SDK transport')))
         default_transport.__module__ = 'urllib3_future_request'
@@ -319,10 +337,11 @@ class ScanPlaybackTests(unittest.TestCase):
             return Response(200, json={'state': True, 'data': [], 'count': 0})
         if request.url.host == 'proapi.115.com' and request.url.path == '/app/chrome/downurl':
             ua = request.headers['User-Agent']
-            if ua == self.desktop_ua and self.hold_desktop:
-                self.download_entered.set()
+            entered = self.held_downloads.get(ua)
+            if entered is not None:
+                entered.set()
                 if not self.release_115.wait(5):
-                    raise ReadTimeout('Fixture desktop download timed out', request=request)
+                    raise ReadTimeout('Fixture player download timed out', request=request)
             return Response(200, json={'state': True, 'data': 'fixture:' + self.links[ua]})
         self.fail('Unexpected fixture endpoint')
 
@@ -347,15 +366,28 @@ class ScanPlaybackTests(unittest.TestCase):
                 self.release_115.set()
 
     def test_phone_gets_own_redirect_while_desktop_download_waits_on_115(self):
-        self.hold_desktop = True
+        download_entered = self.held_downloads[self.desktop_ua] = threading.Event()
         with patch('p115client.util.get_stable_point', return_value='0000'), ThreadPoolExecutor() as pool:
             desktop = pool.submit(self.play, self.desktop_ua)
             try:
-                self.assertTrue(self.download_entered.wait(2), 'Desktop playback did not reach 115')
+                self.assertTrue(download_entered.wait(2), 'Desktop playback did not reach 115')
                 self.assert_phone_plays(pool)
             finally:
                 self.release_115.set()
             self.assertEqual(desktop.result(2), (302, self.links[self.desktop_ua]))
+
+    def test_four_devices_can_resolve_while_three_115_downloads_are_slow(self):
+        self.held_downloads = {ua: threading.Event() for ua in (self.desktop_ua, self.tv_ua, self.tablet_ua)}
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            pending = {ua: pool.submit(self.play, ua) for ua in self.held_downloads}
+            try:
+                for entered in self.held_downloads.values():
+                    self.assertTrue(entered.wait(1), 'All three slow player requests must reach 115 concurrently')
+                self.assert_phone_plays(pool)
+            finally:
+                self.release_115.set()
+            for ua, playback in pending.items():
+                self.assertEqual(playback.result(2), (302, self.links[ua]))
 
     def test_known_pickcode_needs_no_sdk_directory_probe_on_first_play(self):
         with patch('p115client.util.get_stable_point', side_effect=KeyError):

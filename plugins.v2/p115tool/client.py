@@ -28,7 +28,7 @@ TRANSIENT_SDK_ERRORS = frozenset({
     'ReadError', 'IncompleteRead',
 })
 COOKIE_RENEWAL_COOLDOWN = 1800
-COOKIE_DOWNLOAD_SLOTS = 2
+COOKIE_DOWNLOAD_SLOTS = 4
 COOKIE_DOWNLOAD_WAIT = 2.0
 QR_PRIMARY = ('qandroid', 'M1')
 QR_BACKUP = ('alipaymini', 'R2')

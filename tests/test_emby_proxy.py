@@ -162,6 +162,12 @@ class EmbyProxyTests(unittest.TestCase):
         self.assertEqual(pb.json()['MediaSources'][0]['Path'], lan_url)
 
     def test_overlapping_stream_head_and_get_share_one_link_lookup(self):
+        self.assert_overlapping_stream_lookups('session-a', expected_calls=1)
+
+    def test_overlapping_streams_in_different_sessions_use_separate_link_lookups(self):
+        self.assert_overlapping_stream_lookups('session-b', expected_calls=2)
+
+    def assert_overlapping_stream_lookups(self, get_session, *, expected_calls):
         service = FakeService()
         lan_url = f'http://moviepilot.test/api/v1/plugin/P115Tool/play/{TOKEN}'
         path = '/emby/Videos/42/stream'
@@ -194,19 +200,19 @@ class EmbyProxyTests(unittest.TestCase):
                 headers={'User-Agent': 'Player fixture'},
             ) as client:
                 await client.post('/emby/Items/42/PlaybackInfo')
-                head = asyncio.create_task(client.head(path))
+                head = asyncio.create_task(client.head(path, params={'PlaySessionId': 'session-a'}))
                 try:
                     await asyncio.wait_for(head_resolving.wait(), 2)
-                    get = asyncio.create_task(client.get(path))
+                    get = asyncio.create_task(client.get(path, params={'playsessionid': get_session}))
                     await asyncio.wait_for(get_entered.wait(), 2)
                 finally:
                     release.set()
                 for response in await asyncio.gather(head, get):
                     self.assertEqual(response.status_code, 302)
                     self.assertEqual(response.headers['location'], DIRECT_LINK)
-                self.assertEqual(service.calls, [(TOKEN, 'Player fixture')])
-                self.assertEqual((await client.get(path)).status_code, 302)
-                self.assertEqual(len(service.calls), 2)
+                self.assertEqual(service.calls, [(TOKEN, 'Player fixture')] * expected_calls)
+                self.assertEqual((await client.get(path, params={'PlaySessionId': get_session})).status_code, 302)
+                self.assertEqual(len(service.calls), expected_calls + 1)
 
         asyncio.run(exercise())
 
