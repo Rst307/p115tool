@@ -161,8 +161,9 @@ class PlaybackManager:
         self.client = storage.client
         self.config = storage.config
 
-    def _list_verified_copy_folder(self, copy):
-        """List copy folder and verify its identity in one fs_files round-trip when supported."""
+    def _list_verified_copy_folder(self, copy, *, already_verified=False):
+        """List copy folder and verify its identity in one listing when supported."""
+        logger.info(f'115播放流程：媒体={copy["media_id"]}，步骤=核实临时目录，副本状态={copy["stage"]}')
         fast_list = getattr(self.client, 'list_verified_folder', None)
         if callable(fast_list):
             try:
@@ -172,7 +173,8 @@ class PlaybackManager:
                 # Call stat() to distinguish MissingFile (recreate) from SafetyError (tampered).
                 self.validate_folder(copy)
                 raise
-        self.validate_folder(copy)
+        if not already_verified:
+            self.validate_folder(copy)
         return list(self.client.list_files(copy['folder_cid']))
 
     def validate_folder(self, copy):
@@ -192,7 +194,8 @@ class PlaybackManager:
     def create_copy_folder(self, media_id, root, abandoned=None):
         if not root:
             raise SafetyError('Temporary directory not configured')
-        if str(root) == '0' or self.client.directory_path(root) == '/':
+        root_path = getattr(self.client, 'temporary_root_path', self.client.directory_path)
+        if str(root) == '0' or root_path(root) == '/':
             raise SafetyError('Invalid temporary root')
         name = 'p115tool-' + uuid.uuid4().hex
         # Commit the new identity before creating; an unknown result is never retried.
@@ -238,18 +241,15 @@ class PlaybackManager:
             raise SafetyError('Temporary playback code unavailable')
         return actual
 
-    def _resolve_pending_copy(self, media_id, row, copy, recover_unknown, fresh_receive=False):
+    def _resolve_pending_copy(self, media_id, row, copy, recover_unknown, *, fresh_receive, fresh_folder):
         """Verify a RECEIVED or RECEIVE_UNKNOWN copy; return (actual_or_None, new_copy_or_None)."""
         try:
-            if fresh_receive:
-                files = list(self.client.list_files(copy['folder_cid']))
-            else:
-                try:
-                    self.validate_folder(copy)
-                except MissingFile:
-                    files = []
-                else:
-                    files = list(self.client.list_files(copy['folder_cid']))
+            try:
+                files = self._list_verified_copy_folder(copy, already_verified=fresh_folder)
+            except MissingFile:
+                if fresh_receive:
+                    raise
+                files = []
             if not files:
                 if copy['stage'] == 'RECEIVED' and time.time() - copy['received_at'] < RECEIVE_RECOVERY_COOLDOWN:
                     raise SafetyError('Temporary transfer awaiting visibility')
@@ -265,12 +265,10 @@ class PlaybackManager:
                     raise SafetyError('Share mapping changed')
                 # Recheck after share validation, which may take time.
                 try:
-                    self.validate_folder(copy)
+                    if self._list_verified_copy_folder(copy):
+                        raise SafetyError('Temporary contents changed')
                 except MissingFile:
                     pass
-                else:
-                    if list(self.client.list_files(copy['folder_cid'])):
-                        raise SafetyError('Temporary contents changed')
                 if self.service._stop.is_set():
                     raise InterruptedError()
                 logger.info(f'115播放流程：媒体={media_id}，步骤=待确认副本目录为空，归档后重建目录，原状态={copy["stage"]}')
@@ -336,7 +334,7 @@ class PlaybackManager:
 
                 if copy and copy['stage'] in ('RECEIVE_UNKNOWN', 'RECEIVED'):
                     actual, new_copy = self._resolve_pending_copy(
-                        media_id, row, copy, recover_unknown, fresh_receive=fresh_receive,
+                        media_id, row, copy, recover_unknown, fresh_receive=fresh_receive, fresh_folder=fresh_folder,
                     )
                     if actual is not None:
                         return actual
@@ -385,13 +383,11 @@ class PlaybackManager:
 
                 if not fresh_folder:
                     try:
-                        self.validate_folder(copy)
+                        if self._list_verified_copy_folder(copy):
+                            raise SafetyError('Temporary directory not empty')
                     except MissingFile:
                         copy = self.create_copy_folder(media_id, copy['root_cid'])
                         fresh_folder = True
-                    else:
-                        if list(self.client.list_files(copy['folder_cid'])):
-                            raise SafetyError('Temporary directory not empty')
 
                 # Verify sharing metadata again immediately before receiving for owned shares.
                 if row['own']:
@@ -402,6 +398,7 @@ class PlaybackManager:
                     raise InterruptedError()
 
                 self.service.query("UPDATE resource_copies SET stage='RECEIVING' WHERE media_id=?", (media_id,))
+                logger.info(f'115播放流程：媒体={media_id}，步骤=开始分享转存')
                 recv_started = time.monotonic()
                 try:
                     self.client.receive_to_temp(row['share_code'], row['password'], row['share_fid'], copy['folder_cid'])
@@ -416,7 +413,7 @@ class PlaybackManager:
                 now = time.time()
                 self.service.query("UPDATE resource_copies SET stage='RECEIVED',received_at=? WHERE media_id=?", (now, media_id))
                 copy = {**copy, 'stage': 'RECEIVED', 'received_at': now}
-                fresh_receive = fresh_folder
+                fresh_receive = True
                 recover_unknown = False
 
     def play_moviepilot_copy(self, media_id, ua):

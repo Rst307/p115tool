@@ -7,9 +7,11 @@ import unittest
 from unittest.mock import patch
 
 from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
+from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient, Client, MockTransport, ReadTimeout, Response
 
 from p115tool.api import routes
+from p115tool.client import P115ClientManager
 from p115tool.config import Config
 from p115tool.models import DownloadLink, RemoteFile
 from p115tool.service import Service
@@ -17,6 +19,103 @@ from p115tool.service import Service
 
 TOKEN = 'fixture-playback-identifier'
 LINK = 'https://cdn.115.com/fixture'
+
+
+class CookieVirtualPlaybackTests(unittest.TestCase):
+    def setUp(self):
+        from p115client import P115Client
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        config = Config.from_dict({'enabled': True, 'data_dir': str(root / 'data'),
+                                   'strm_dir': str(root / 'strm'), 'temp_cid': '90'})
+        sdk = P115Client('UID=1_A1_1; CID=fixture; SEID=fixture', console_qrcode=False)
+        manager = P115ClientManager(config, sdk)
+        self.assertTrue(manager._use_httpx_transport(sdk))
+        manager._http = Client(transport=MockTransport(self.request_115))
+        self.service = Service(config, manager)
+        self.addCleanup(self.service.close)
+        self.calls = []
+        self.members = []
+        self.folder_count = 0
+        self.folder_name = 'p115tool-fixture'
+        self.token = self.service.register(RemoteFile('v_fixture', 'video.mkv', 32, 'A' * 40, '0'), 'video.mkv')
+        self.service.query("INSERT INTO resource_storage(media_id,kind,stage,share_code,password,share_fid,own) "
+                           "VALUES('v_fixture','VIRTUAL','READY','fixture','abcd','7',0)")
+        self.service.query("INSERT INTO resource_copies(media_id,root_cid,folder_name,folder_cid,stage) "
+                           "VALUES('v_fixture','90',?,'101','EMPTY')", (self.folder_name,))
+        download = patch.object(sdk, 'download_url', return_value=LINK)
+        self.download = download.start()
+        self.addCleanup(download.stop)
+        app = FastAPI()
+        route, = routes(SimpleNamespace(_service=self.service))
+        app.add_api_route(route['path'], route['endpoint'], methods=route['methods'])
+        self.http = self.enterContext(TestClient(app))
+
+    def request_115(self, request):
+        host_path = (request.url.host, request.url.path)
+        self.calls.append(host_path)
+        if host_path == ('webapi.115.com', '/files/get_info'):
+            return Response(200, json={'state': True, 'data': [{'cid': '101', 'pid': '90', 'n': self.folder_name}]})
+        if host_path == ('webapi.115.com', '/files'):
+            raise ReadTimeout('Simulated directory listing timeout', request=request)
+        if host_path == ('proapi.115.com', '/android/2.0/ufile/files'):
+            ancestors = [{'cid': '0', 'name': 'root'}, {'cid': '90', 'name': 'temp'}]
+            if request.url.params['cid'] == '90':
+                return Response(200, json={'state': True, 'data': [], 'count': 0, 'path': ancestors})
+            payload = {'state': True, 'data': self.members, 'path': [
+                *ancestors, {'cid': '101', 'name': self.folder_name},
+            ]}
+            if self.folder_count is not None:
+                payload['count'] = self.folder_count
+            return Response(200, json=payload)
+        if host_path == ('webapi.115.com', '/files/add') and request.method == 'POST':
+            from urllib.parse import parse_qs
+            self.folder_name = parse_qs(request.content.decode())['cname'][0]
+            return Response(200, json={'state': True, 'cid': '101'})
+        if host_path == ('webapi.115.com', '/share/receive') and request.method == 'POST':
+            self.members = [{'fid': '201', 'pid': '101', 'fc': '1', 'fn': 'video.mkv',
+                             'fs': '32', 'sha1': 'A' * 40, 'pc': 'fixturepickcode'}]
+            self.folder_count = 1
+            return Response(200, json={'state': True})
+        self.fail(f'Unexpected fixture endpoint {host_path}')
+
+    def test_empty_copy_plays_when_web_directory_listing_times_out(self):
+        response = self.http.get('/play/' + self.token, headers={'User-Agent': 'Player fixture'}, follow_redirects=False)
+        self.assertEqual(response.status_code, 302, self.calls)
+        self.assertEqual(response.headers['location'], LINK)
+        self.assertEqual(self.calls, [
+            ('proapi.115.com', '/android/2.0/ufile/files'),
+            ('webapi.115.com', '/share/receive'),
+            ('proapi.115.com', '/android/2.0/ufile/files'),
+        ])
+        copy = self.service.storage.copy('v_fixture')
+        self.assertEqual((copy['folder_cid'], copy['file_id'], copy['stage']), ('101', '201', 'READY'))
+        self.download.assert_called_once()
+        self.assertEqual(self.download.call_args.kwargs['user_agent'], 'Player fixture')
+
+    def test_virtual_resource_without_copy_plays_when_web_directory_listing_times_out(self):
+        self.service.query("DELETE FROM resource_copies WHERE media_id='v_fixture'")
+        response = self.http.get('/play/' + self.token, follow_redirects=False)
+        self.assertEqual(response.status_code, 302, self.calls)
+        self.assertEqual(response.headers['location'], LINK)
+        self.assertEqual(self.calls, [
+            ('proapi.115.com', '/android/2.0/ufile/files'),
+            ('webapi.115.com', '/files/add'),
+            ('webapi.115.com', '/share/receive'),
+            ('proapi.115.com', '/android/2.0/ufile/files'),
+        ])
+
+    def test_empty_copy_with_unverified_listing_does_not_receive(self):
+        for count, members in ((None, []), (1, []), (1, [{'fid': '201', 'pid': '101', 'fc': '0', 'fn': 'other'}])):
+            with self.subTest(count=count, members=members):
+                self.folder_count, self.members = count, members
+                self.calls.clear()
+                response = self.http.get('/play/' + self.token, follow_redirects=False)
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(self.calls, [('proapi.115.com', '/android/2.0/ufile/files')])
+                self.assertEqual(self.service.storage.copy('v_fixture')['stage'], 'EMPTY')
 
 
 class PlaybackEndpointTests(unittest.IsolatedAsyncioTestCase):

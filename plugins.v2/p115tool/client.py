@@ -417,7 +417,7 @@ class P115ClientManager:
             # SDK exceptions may embed cookie-bearing request representations.
             code=next((code for arg in exc.args if (code:=response_code(arg)) is not None),None)
             # Only a typed SDK absence on a read is proof that a copy disappeared.
-            missing=(method in ('fs_file','fs_files') and isinstance(exc,FileNotFoundError)
+            missing=(method in ('fs_file','fs_files','fs_files_app') and isinstance(exc,FileNotFoundError)
                      and type(exc).__module__=='p115client.exception')
             error=(MissingFile('Remote file no longer exists') if missing else RemoteError('115 SDK request failed'))
             error.operation=method;error.upstream_code=code;error.sdk_error=type(exc).__name__
@@ -427,10 +427,15 @@ class P115ClientManager:
 
     def directory_path(self, cid="0"):
         """Read the selected directory's ancestors, without trusting a manual prefix."""
+        return self._read_directory_path(cid, 'fs_files')
+
+    def temporary_root_path(self, cid):
+        return self._read_directory_path(cid, self._copy_list_method())
+
+    def _read_directory_path(self, cid, method):
         if str(cid) == '0':
             return '/'
-        response = check_response(self.call('fs_files', {
-            'cid': str(cid), 'offset': 0, 'limit': 1, 'cur': 1, 'show_dir': 1}))
+        response = self._directory_page(method, str(cid), offset=0, limit=1)
         return self._directory_path(response, str(cid))
 
     def _directory_path(self, response, cid):
@@ -460,20 +465,28 @@ class P115ClientManager:
             raise SafetyError('Directory ancestors unavailable')
         return '/' + '/'.join(parts)
 
+    def _copy_list_method(self):
+        if not self.config.use_moviepilot_auth:
+            with self._lock:
+                if callable(getattr(self._client(), 'fs_files_app', None)):
+                    return 'fs_files_app'
+        return 'fs_files'
+
+    def _directory_page(self, method, cid, *, offset, limit):
+        payload = {'cid': cid, 'offset': offset, 'limit': limit, 'cur': 1, 'show_dir': 1}
+        if method == 'fs_files_app':
+            payload['record_open_time'] = 0
+        return check_response(self.call(method, payload))
+
     def list_verified_folder(self, cid, expected_parent, expected_name):
-        """Verify folder identity from fs_files_app/fs_files ancestors and list contents in one round-trip."""
+        """Verify the folder identity against its ancestors and list its complete contents."""
         offset = 0
         seen = set()
         expected_count = None
         results = []
-        list_method = 'fs_files'
-        if not self.config.use_moviepilot_auth:
-            with self._lock:
-                sdk = self._client()
-                if callable(getattr(sdk, 'fs_files_app', None)):
-                    list_method = 'fs_files_app'
+        list_method = self._copy_list_method()
         while True:
-            resp = check_response(self.call(list_method, {"cid": cid, "offset": offset, "limit": 1000, "cur": 1, "show_dir": 1}))
+            resp = self._directory_page(list_method, cid, offset=offset, limit=1000)
             directory = self._directory_path(resp, str(cid))
             trail = resp.get("path", [])
             if (not isinstance(trail, list) or len(trail) < 2
@@ -484,19 +497,18 @@ class P115ClientManager:
             rows = resp.get("data")
             if not isinstance(rows, list):
                 raise RemoteError("Malformed directory response")
-            if self.config.use_moviepilot_auth:
-                count = resp.get('count')
-                if (type(count) not in (str, int) or not str(count).isdigit()
-                        or (expected_count is not None and expected_count != int(count))
-                        or offset + len(rows) > int(count)):
-                    raise RemoteError('Incomplete directory pagination')
-                expected_count = int(count)
+            count = resp.get('count')
+            if (type(count) not in (str, int) or not str(count).isdigit()
+                    or (expected_count is not None and expected_count != int(count))
+                    or offset + len(rows) > int(count)):
+                raise RemoteError('Incomplete directory pagination')
+            expected_count = int(count)
             for row in rows:
                 name = row.get('n') or row.get('fn') or row.get('file_name') or row.get('name') or row.get('category_name')
                 from .strm import safe_parts
                 if not isinstance(name, str) or len(safe_parts(name)) != 1:
                     raise SafetyError('Invalid listed file name')
-                if self.config.use_moviepilot_auth:
+                if self.config.use_moviepilot_auth or (list_method == 'fs_files_app' and 'fc' in row):
                     category = str(row.get('fc', ''))
                     if category not in ('0', '1'):
                         raise RemoteError('Unsupported 115 file metadata shape')
@@ -507,8 +519,7 @@ class P115ClientManager:
                 seen.add(file.file_id)
                 results.append(file)
             offset += len(rows)
-            count = int(resp.get("count", offset))
-            if offset >= count:
+            if offset == expected_count:
                 break
             if not rows:
                 raise RemoteError("Incomplete directory pagination")
