@@ -51,6 +51,7 @@ SAFETY_REASONS={
     'Playback link unavailable for existing copy':'EXISTING_COPY_LINK_UNAVAILABLE',
     '115 cookie is not configured':'COOKIE_NOT_CONFIGURED',
     '115 client is stopped':'CLIENT_STOPPED',
+    '115 playback download slots busy':'PLAYBACK_DOWNLOAD_BUSY',
     '115 playback link unavailable':'PLAYBACK_LINK_UNAVAILABLE',
     'Remote file no longer exists':'REMOTE_FILE_MISSING',
     'Remote file not found':'REMOTE_FILE_MISSING',

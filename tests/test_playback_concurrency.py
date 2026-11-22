@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 import tempfile
 import threading
@@ -45,7 +46,7 @@ class CookieVirtualPlaybackTests(unittest.TestCase):
                            "VALUES('v_fixture','VIRTUAL','READY','fixture','abcd','7',0)")
         self.service.query("INSERT INTO resource_copies(media_id,root_cid,folder_name,folder_cid,stage) "
                            "VALUES('v_fixture','90',?,'101','EMPTY')", (self.folder_name,))
-        download = patch.object(sdk, 'download_url', return_value=LINK)
+        download = patch.object(sdk, 'download_url_app', return_value={'state': True, 'data': {'url': LINK}})
         self.download = download.start()
         self.addCleanup(download.stop)
         app = FastAPI()
@@ -268,6 +269,98 @@ class ActualPlaybackTests(unittest.TestCase):
         with patch.object(self.service.storage, 'ensure_copy', return_value=copy) as ensure:
             self.assertEqual(self.service.play(self.token, 'Emby fixture'), copy_link)
         ensure.assert_called_once_with('10')
+
+
+class ScanPlaybackTests(unittest.TestCase):
+    desktop_ua = 'Desktop player fixture'
+    phone_ua = 'Mobile player fixture'
+    links = {desktop_ua: LINK + '/desktop', phone_ua: LINK + '/phone'}
+
+    def setUp(self):
+        from p115client import P115Client
+
+        temporary = self.enterContext(tempfile.TemporaryDirectory())
+        root = Path(temporary)
+        config = Config.from_dict({'enabled': True, 'data_dir': str(root / 'data'),
+                                   'strm_dir': str(root / 'strm'), 'source_cids': ['0']})
+        sdk = P115Client('UID=1_A1_1; CID=fixture; SEID=fixture', console_qrcode=False)
+        manager = P115ClientManager(config, sdk)
+        self.scan_entered = threading.Event()
+        self.download_entered = threading.Event()
+        self.release_115 = threading.Event()
+        self.hold_desktop = False
+        default_transport = self.enterContext(patch('urllib3_future_request.request',
+                                                     side_effect=AssertionError('Unexpected default SDK transport')))
+        default_transport.__module__ = 'urllib3_future_request'
+        self.default_transport = default_transport
+        manager._http = Client(transport=MockTransport(self.request_115))
+        self.service = Service(config, manager)
+        self.addCleanup(self.service.close)
+        file = RemoteFile('10', 'sample.mkv', 32, 'A' * 40, '1', 'a0000000000000000')
+        self.playback_path = '/play/' + self.service.register(file, 'sample.mkv')
+        app = FastAPI()
+        route, = routes(SimpleNamespace(_service=self.service))
+        app.add_api_route(route['path'], route['endpoint'], methods=route['methods'])
+        self.http = self.enterContext(TestClient(app))
+        self.enterContext(patch('p115client.client.rsa_decrypt', side_effect=self.decode_fixture_link))
+
+    @staticmethod
+    def decode_fixture_link(data):
+        import json
+
+        return json.dumps({'10': {'pick_code': 'a0000000000000000',
+                                  'url': {'url': data.removeprefix('fixture:')}}}).encode()
+
+    def request_115(self, request):
+        if request.url.host == 'webapi.115.com' and request.url.path == '/files':
+            self.scan_entered.set()
+            if not self.release_115.wait(5):
+                raise ReadTimeout('Fixture directory listing timed out', request=request)
+            return Response(200, json={'state': True, 'data': [], 'count': 0})
+        if request.url.host == 'proapi.115.com' and request.url.path == '/app/chrome/downurl':
+            ua = request.headers['User-Agent']
+            if ua == self.desktop_ua and self.hold_desktop:
+                self.download_entered.set()
+                if not self.release_115.wait(5):
+                    raise ReadTimeout('Fixture desktop download timed out', request=request)
+            return Response(200, json={'state': True, 'data': 'fixture:' + self.links[ua]})
+        self.fail('Unexpected fixture endpoint')
+
+    def play(self, ua):
+        response = self.http.get(self.playback_path, headers={'User-Agent': ua}, follow_redirects=False)
+        return response.status_code, response.headers.get('location')
+
+    def assert_phone_plays(self, pool):
+        phone = pool.submit(self.play, self.phone_ua)
+        completed, _ = wait([phone], timeout=1)
+        self.assertIn(phone, completed, 'Mobile playback must return a redirect before the other call is released')
+        self.assertEqual(phone.result(), (302, self.links[self.phone_ua]))
+
+    def test_phone_gets_own_redirect_while_actual_storage_scan_waits_on_115(self):
+        with patch('p115client.util.get_stable_point', return_value='0000'), ThreadPoolExecutor() as pool:
+            self.assertEqual(self.play(self.desktop_ua), (302, self.links[self.desktop_ua]))
+            self.service.storage.request_refresh()
+            try:
+                self.assertTrue(self.scan_entered.wait(2), 'Actual storage scan did not reach 115')
+                self.assert_phone_plays(pool)
+            finally:
+                self.release_115.set()
+
+    def test_phone_gets_own_redirect_while_desktop_download_waits_on_115(self):
+        self.hold_desktop = True
+        with patch('p115client.util.get_stable_point', return_value='0000'), ThreadPoolExecutor() as pool:
+            desktop = pool.submit(self.play, self.desktop_ua)
+            try:
+                self.assertTrue(self.download_entered.wait(2), 'Desktop playback did not reach 115')
+                self.assert_phone_plays(pool)
+            finally:
+                self.release_115.set()
+            self.assertEqual(desktop.result(2), (302, self.links[self.desktop_ua]))
+
+    def test_known_pickcode_needs_no_sdk_directory_probe_on_first_play(self):
+        with patch('p115client.util.get_stable_point', side_effect=KeyError):
+            self.assertEqual(self.play(self.phone_ua), (302, self.links[self.phone_ua]))
+        self.default_transport.assert_not_called()
 
 
 class VirtualPlaybackEfficiencyTests(unittest.TestCase):

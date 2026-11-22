@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import tempfile
+from threading import Barrier
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
@@ -133,6 +134,32 @@ class CookieRenewalTests(unittest.TestCase):
         self.assertEqual(sum(path.endswith('/login/qrcode/') for path, _ in self.calls), 1)
         self.assertEqual([uid for path, uid in self.calls if path.endswith('/files')],
                          ['123_A1_1', '123_A1_3', '123_A1_3'])
+
+    def test_overlapping_downloads_retry_with_one_verified_cookie_rotation(self):
+        both_rejected = Barrier(2, timeout=3)
+        downloads = []
+        fixture_url = 'https://cdn.115.com/fixture'
+
+        def request(*, url, parse, **kwargs):
+            if urlsplit(url).path != '/app/chrome/downurl':
+                return self.request(url=url, parse=parse, **kwargs)
+            uid = next(cookie.value for cookie in kwargs['cookies'] if cookie.name == 'UID')
+            ua = kwargs['headers']['user-agent']
+            downloads.append((ua, uid))
+            if uid == '123_A1_1':
+                both_rejected.wait()
+                return parse(None, b'{"state":false,"errno":99}')
+            return parse(None, b'{"state":true,"data":"encoded-fixture"}')
+
+        self.transport.side_effect = request
+        with (patch('p115client.client.rsa_decrypt', return_value=json.dumps({'url': fixture_url}).encode()),
+              ThreadPoolExecutor(max_workers=2) as pool):
+            futures = [pool.submit(self.manager.normal_link, 'a0000000000000000', ua)
+                       for ua in ('Desktop fixture', 'Mobile fixture')]
+            self.assertTrue(all(future.result(5).url == fixture_url for future in futures))
+        self.assertEqual(sum(path.endswith('/login/qrcode/') for path, _ in self.calls), 1)
+        for ua in ('Desktop fixture', 'Mobile fixture'):
+            self.assertEqual([uid for player, uid in downloads if player == ua], ['123_A1_1', '123_A1_3'])
 
     def test_config_requires_same_account_distinct_devices_and_masks_saved_backup(self):
         for seed in (self.original, sample_cookie(456, 'F1', 2), '', 'invalid'):
