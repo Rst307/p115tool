@@ -22,6 +22,7 @@ OPEN_READ_METHODS = {
 }
 COOKIE_RETRY_READS = frozenset(OPEN_READ_METHODS) | {'fs_files_app', 'share_snap', 'share_download_url', 'recyclebin_list'}
 TRANSIENT_RETRY_READS = frozenset(OPEN_READ_METHODS) | {'fs_files_app'}
+COOKIE_COPY_READS = frozenset({'fs_file', 'fs_files_app'})
 TRANSIENT_SDK_ERRORS = frozenset({
     'ConnectError', 'ConnectionError', 'ConnectionResetError', 'ConnectionAbortedError',
     'BrokenPipeError', 'RemoteProtocolError', 'ProtocolError', 'SSLError',
@@ -29,7 +30,8 @@ TRANSIENT_SDK_ERRORS = frozenset({
 })
 COOKIE_RENEWAL_COOLDOWN = 1800
 COOKIE_DOWNLOAD_SLOTS = 4
-COOKIE_DOWNLOAD_WAIT = 2.0
+COOKIE_COPY_READ_SLOTS = 4
+COOKIE_PLAYBACK_WAIT = 2.0
 QR_PRIMARY = ('qandroid', 'M1')
 QR_BACKUP = ('alipaymini', 'R2')
 
@@ -81,15 +83,19 @@ def normalize_file(data, parent="0", path=""):
 
 
 class P115ClientManager:
-    """Manage one SDK session, serialized storage calls, and bounded Cookie downloads."""
+    """Manage the SDK session, serialized storage writes, and bounded Cookie playback reads."""
     def __init__(self, config, sdk=None):
         self.config = config
         self._lock = threading.RLock()
         self._lock_owner = None
+        # Renewal and writes share this lock. Playback reads only need the
+        # short-lived session lock to obtain the current SDK and HTTP pool.
         self._auth_lock = threading.RLock()
+        self._session_lock = threading.Lock()
         self._cookie_revision = 0
         self._download_slots = threading.BoundedSemaphore(COOKIE_DOWNLOAD_SLOTS)
-        self._last_download_start = 0.0
+        self._copy_read_slots = threading.BoundedSemaphore(COOKIE_COPY_READ_SLOTS)
+        self._last_playback_request_start = 0.0
         self._sdk = sdk
         self._http = None
         self._moviepilot_storage = None
@@ -98,13 +104,14 @@ class P115ClientManager:
         self._cookie_renewal = CookieRenewal(config)
 
     def close(self):
-        # Stop admissions before draining both kinds of calls. An active download
-        # may still need the auth lock during cleanup, so release it before draining.
-        with self._lock, ExitStack() as downloads:
-            with self._auth_lock:
+        # In-flight reads may need the auth lock for recovery. Release it before draining.
+        with self._lock, ExitStack() as reads:
+            with self._auth_lock, self._session_lock:
                 self._closed = True
+            for _ in range(COOKIE_COPY_READ_SLOTS):
+                reads.enter_context(self._copy_read_slots)
             for _ in range(COOKIE_DOWNLOAD_SLOTS):
-                downloads.enter_context(self._download_slots)
+                reads.enter_context(self._download_slots)
             self._sdk = None
             if self._http is not None:
                 try:
@@ -115,7 +122,7 @@ class P115ClientManager:
             self._moviepilot_storage = None
 
     def _http_client(self):
-        with self._auth_lock:
+        with self._session_lock:
             if self._http is None:
                 import httpx
                 # Use a shared HTTP/1.1 pool for direct connections to 115 APIs.
@@ -170,7 +177,7 @@ class P115ClientManager:
         return response
 
     def _client(self):
-        with self._auth_lock:
+        with self._session_lock:
             if self._closed:
                 raise RemoteError('115 client is stopped')
             if self._sdk is None:
@@ -336,8 +343,9 @@ class P115ClientManager:
             renewal.state = 'PERSISTENCE_FAILED'
             logger.warning('115 Cookie 自动续登保存失败：状态=PERSISTENCE_FAILED')
             return False
-        self._sdk = updated
-        self._cookie_revision += 1
+        with self._session_lock:
+            self._sdk = updated
+            self._cookie_revision += 1
         renewal.state = 'RENEWED'
         logger.info('115 Cookie 主会话自动续登成功：状态=RENEWED')
         return True
@@ -366,17 +374,20 @@ class P115ClientManager:
         )
 
     def call(self, method, *args, **kwargs):
-        if method == 'download_url' and not self.config.use_moviepilot_auth:
+        download = method == 'download_url'
+        if not self.config.use_moviepilot_auth and (download or method in COOKIE_COPY_READS):
             if self._closed:
                 raise RemoteError('115 client is stopped')
-            if not self._download_slots.acquire(timeout=COOKIE_DOWNLOAD_WAIT):
-                error = ToolError('115 playback download slots busy')
+            slots = self._download_slots if download else self._copy_read_slots
+            if not slots.acquire(timeout=COOKIE_PLAYBACK_WAIT):
+                message = '115 playback download slots busy' if download else '115 playback copy read slots busy'
+                error = ToolError(message)
                 error.operation = method
                 raise error
             try:
-                return self._call_with_recovery(method, args, kwargs, download=True)
+                return self._call_with_recovery(method, args, kwargs, parallel_read=True)
             finally:
-                self._download_slots.release()
+                slots.release()
 
         acquired = self._lock.acquire(timeout=2.0)
         if not acquired:
@@ -396,25 +407,25 @@ class P115ClientManager:
             self._lock_owner = prev_owner
             self._lock.release()
 
-    def _call_with_recovery(self, method, args, kwargs, *, download=False):
+    def _call_with_recovery(self, method, args, kwargs, *, parallel_read=False):
         started = time.monotonic()
         cookie_revision = self._cookie_revision
         try:
-            return self._call_once(method, args, kwargs, download=download)
+            return self._call_once(method, args, kwargs, parallel_read=parallel_read)
         except RemoteError as exc:
             code = getattr(exc, 'upstream_code', None)
             sdk_error = getattr(exc, 'sdk_error', None)
-            if method in COOKIE_RETRY_READS and code in (99, 990001):
+            if method in COOKIE_RETRY_READS and code in (99, 990001) and self.config.cookie_auto_refresh:
                 with self._auth_lock:
                     renewed = (self._cookie_revision != cookie_revision
                                or self._check_cookie_locked(on_auth_reject=True))
                 if renewed:
-                    return self._call_once(method, args, kwargs, download=download)
+                    return self._call_once(method, args, kwargs, parallel_read=parallel_read)
             if (method in TRANSIENT_RETRY_READS and not isinstance(exc, MissingFile)
                     and code is None and sdk_error in TRANSIENT_SDK_ERRORS and not self._closed):
                 logger.info(f'115只读请求遇网络抖动，重试一次：接口={method}，SDK异常={sdk_error}')
                 time.sleep(0.3)
-                return self._call_once(method, args, kwargs, download=download)
+                return self._call_once(method, args, kwargs, parallel_read=parallel_read)
             raise
         finally:
             elapsed = time.monotonic() - started
@@ -443,17 +454,16 @@ class P115ClientManager:
             raise RemoteError('115 playback link unavailable')
         return DownloadLink(url, response.get('headers') or {})
 
-    def _call_once(self, method, args, kwargs, *, download):
+    def _call_once(self, method, args, kwargs, *, parallel_read):
         if self._closed:
             raise RemoteError('115 client is stopped')
         try:
-            if download:
-                with self._auth_lock:
-                    wait = 0.05 - (time.monotonic() - self._last_download_start)
+            if parallel_read:
+                with self._session_lock:
+                    wait = 0.05 - (time.monotonic() - self._last_playback_request_start)
                     if wait > 0:
                         time.sleep(wait)
-                    self._last_download_start = time.monotonic()
-                    sdk = self._client()
+                    self._last_playback_request_start = time.monotonic()
             else:
                 min_gap = 0.05 if method in TRANSIENT_RETRY_READS else 0.2
                 wait = min_gap - (time.monotonic() - self._last_request)
@@ -467,12 +477,11 @@ class P115ClientManager:
                     raise error
             else:
                 call_kwargs = dict(kwargs)
-                if not download:
-                    sdk = self._client()
+                sdk = self._client()
                 if self._use_httpx_transport(sdk):
                     call_kwargs.setdefault('request', self._httpx_request)
                 call_kwargs['timeout'] = self.config.request_timeout
-                if download and call_kwargs.get('app') == 'chrome':
+                if method == 'download_url' and call_kwargs.get('app') == 'chrome':
                     result = self._cookie_download(sdk, *args, **call_kwargs)
                 else:
                     result = getattr(sdk, method)(*args, **call_kwargs)
@@ -496,7 +505,7 @@ class P115ClientManager:
             error.operation=method;error.upstream_code=code;error.sdk_error=type(exc).__name__
             raise error from None
         finally:
-            if not download:
+            if not parallel_read:
                 self._last_request = time.monotonic()
 
     def directory_path(self, cid="0"):
@@ -540,10 +549,8 @@ class P115ClientManager:
         return '/' + '/'.join(parts)
 
     def _copy_list_method(self):
-        if not self.config.use_moviepilot_auth:
-            with self._lock:
-                if callable(getattr(self._client(), 'fs_files_app', None)):
-                    return 'fs_files_app'
+        if not self.config.use_moviepilot_auth and callable(getattr(self._client(), 'fs_files_app', None)):
+            return 'fs_files_app'
         return 'fs_files'
 
     def _directory_page(self, method, cid, *, offset, limit):

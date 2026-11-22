@@ -12,6 +12,7 @@ except ModuleNotFoundError:
 
 PLAYBACK_GUARD = 24 * 3600
 RECEIVE_RECOVERY_COOLDOWN = 30
+RECEIVE_VISIBILITY_DELAY = 0.25
 
 
 def _err_code(exc):
@@ -19,9 +20,9 @@ def _err_code(exc):
     return code if type(code) is int else None
 
 
-def matches_copy(file, row, parent=None):
+def matches_copy(file, row, parent=None, *, allow_missing_sha1=False):
     return (not file.is_dir and file.name == row['name'] and file.size == row['size']
-            and (not row['sha1'] or file.sha1 == row['sha1'])
+            and (not row['sha1'] or file.sha1 == row['sha1'] or (allow_missing_sha1 and not file.sha1))
             and (parent is None or file.parent_id == parent))
 
 
@@ -250,6 +251,11 @@ class PlaybackManager:
                 if fresh_receive:
                     raise
                 files = []
+            if fresh_receive and not files:
+                # A successful receive can precede the new file becoming visible to list.
+                if self.service._stop.wait(RECEIVE_VISIBILITY_DELAY):
+                    raise InterruptedError()
+                files = self._list_verified_copy_folder(copy)
             if not files:
                 if copy['stage'] == 'RECEIVED' and time.time() - copy['received_at'] < RECEIVE_RECOVERY_COOLDOWN:
                     raise SafetyError('Temporary transfer awaiting visibility')
@@ -277,7 +283,7 @@ class PlaybackManager:
             if len(files) != 1:
                 raise SafetyError('Temporary contents not uniquely verified')
             candidate = files[0]
-            if not matches_copy(candidate, row, copy['folder_cid']):
+            if not matches_copy(candidate, row, copy['folder_cid'], allow_missing_sha1=True):
                 raise SafetyError('Temporary identity changed')
             # Pre-existing RECEIVED/RECEIVE_UNKNOWN checkpoints verify full detail via stat();
             # a freshly received copy in the same call only needs stat() if listing omitted pickcode/sha1.
@@ -365,7 +371,7 @@ class PlaybackManager:
                         fresh_folder = True  # Folder was just validated and confirmed empty.
                         continue
                     members = [f for f in contents if f.file_id == copy['file_id']]
-                    if len(members) != 1 or not matches_copy(members[0], row, copy['folder_cid']):
+                    if len(members) != 1 or not matches_copy(members[0], row, copy['folder_cid'], allow_missing_sha1=True):
                         raise SafetyError('Temporary contents changed')
                     needs_stat = not members[0].pickcode or (bool(row['sha1']) and not members[0].sha1)
                     actual = self._resolve_candidate_detail(members[0], row, copy['folder_cid'], require_stat=False)
@@ -454,7 +460,8 @@ class PlaybackManager:
                     raise SafetyError('Temporary contents not uniquely verified')
                 candidate = files[0]
                 check_file_id = copy['stage'] == 'READY' or bool(copy['file_id'])
-                if (check_file_id and candidate.file_id != copy['file_id']) or not matches_copy(candidate, row, copy['folder_cid']):
+                if ((check_file_id and candidate.file_id != copy['file_id'])
+                        or not matches_copy(candidate, row, copy['folder_cid'], allow_missing_sha1=True)):
                     raise SafetyError('Temporary contents changed')
                 try:
                     actual = self._resolve_candidate_detail(candidate, row, copy['folder_cid'], require_stat=False)

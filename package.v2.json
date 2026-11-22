@@ -3,7 +3,7 @@
     "name": "115 工具箱",
     "description": "实际与虚拟存储、分享临时转存、分类STRM及302播放",
     "labels": "115,STRM,媒体管理",
-    "version": "0.2.75",
+    "version": "0.2.76",
     "system_version": ">=2.15.6,<3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "Rst307",
@@ -11,6 +11,7 @@
     "v3": false,
     "release": true,
     "history": {
+      "v0.2.76": "优化虚拟存储起播，副本核实可与其他视频转存和目录扫描并行，首次转存后短暂不可见时自动只读复核，列表缺少 SHA-1 时核实文件详情",
       "v0.2.75": "支持多台设备同时起播，Cookie 模式的 115 取链提高到四路并发，区分 Emby 播放会话和不同客户端",
       "v0.2.74": "修复 Cookie 模式下后台扫描或一台播放器取链卡住时，另一台设备无法起播的问题。两台播放器可独立取链，已有提取码直接使用 115 下载接口",
       "v0.2.73": "加快分享导入生成虚拟STRM，合并本地映射写入，降低进度落盘频率，重复导入跳过未变更记录；Emby代理合并同资源同UA的并发取链",

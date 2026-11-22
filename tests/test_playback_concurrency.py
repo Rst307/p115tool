@@ -41,6 +41,11 @@ class CookieVirtualPlaybackTests(unittest.TestCase):
         self.members = []
         self.folder_count = 0
         self.folder_name = 'p115tool-fixture'
+        self.receive_entered = threading.Event()
+        self.release_receive = threading.Event()
+        self.hold_receive = False
+        self.hide_fresh_receive_once = False
+        self.omit_warm_sha1 = False
         self.token = self.service.register(RemoteFile('v_fixture', 'video.mkv', 32, 'A' * 40, '0'), 'video.mkv')
         self.service.query("INSERT INTO resource_storage(media_id,kind,stage,share_code,password,share_fid,own) "
                            "VALUES('v_fixture','VIRTUAL','READY','fixture','abcd','7',0)")
@@ -58,6 +63,8 @@ class CookieVirtualPlaybackTests(unittest.TestCase):
         host_path = (request.url.host, request.url.path)
         self.calls.append(host_path)
         if host_path == ('webapi.115.com', '/files/get_info'):
+            if request.url.params['file_id'] == '202':
+                return Response(200, json={'state': True, 'data': [self.warm_member]})
             return Response(200, json={'state': True, 'data': [{'cid': '101', 'pid': '90', 'n': self.folder_name}]})
         if host_path == ('webapi.115.com', '/files'):
             raise ReadTimeout('Simulated directory listing timeout', request=request)
@@ -65,22 +72,88 @@ class CookieVirtualPlaybackTests(unittest.TestCase):
             ancestors = [{'cid': '0', 'name': 'root'}, {'cid': '90', 'name': 'temp'}]
             if request.url.params['cid'] == '90':
                 return Response(200, json={'state': True, 'data': [], 'count': 0, 'path': ancestors})
+            if request.url.params['cid'] == '102':
+                member = dict(self.warm_member)
+                if self.omit_warm_sha1:
+                    del member['sha1']
+                return Response(200, json={'state': True, 'data': [member], 'count': 1, 'path': [
+                    *ancestors, {'cid': '102', 'name': 'p115tool-warm'},
+                ]})
             payload = {'state': True, 'data': self.members, 'path': [
                 *ancestors, {'cid': '101', 'name': self.folder_name},
             ]}
             if self.folder_count is not None:
                 payload['count'] = self.folder_count
+            if self.members and self.hide_fresh_receive_once:
+                self.hide_fresh_receive_once = False
+                payload.update(data=[], count=0)
             return Response(200, json=payload)
         if host_path == ('webapi.115.com', '/files/add') and request.method == 'POST':
             from urllib.parse import parse_qs
             self.folder_name = parse_qs(request.content.decode())['cname'][0]
             return Response(200, json={'state': True, 'cid': '101'})
         if host_path == ('webapi.115.com', '/share/receive') and request.method == 'POST':
+            if self.hold_receive:
+                self.receive_entered.set()
+                if not self.release_receive.wait(5):
+                    raise ReadTimeout('Fixture transfer timed out', request=request)
             self.members = [{'fid': '201', 'pid': '101', 'fc': '1', 'fn': 'video.mkv',
                              'fs': '32', 'sha1': 'A' * 40, 'pc': 'fixturepickcode'}]
             self.folder_count = 1
             return Response(200, json={'state': True})
         self.fail(f'Unexpected fixture endpoint {host_path}')
+
+    def register_ready_copy(self):
+        self.warm_member = {'fid': '202', 'pid': '102', 'fc': '1', 'fn': 'warm.mkv',
+                            'fs': '64', 'sha1': 'B' * 40, 'pc': 'warmpickcode'}
+        token = self.service.register(RemoteFile('v_warm', 'warm.mkv', 64, 'B' * 40, '0'), 'warm.mkv')
+        self.service.query("INSERT INTO resource_storage(media_id,kind,stage,share_code,password,share_fid) "
+                           "VALUES('v_warm','VIRTUAL','READY','fixture','abcd','8')")
+        self.service.query("INSERT INTO resource_copies(media_id,root_cid,folder_name,folder_cid,file_id,stage) "
+                           "VALUES('v_warm','90','p115tool-warm','102','202','READY')")
+        return token
+
+    def test_ready_virtual_plays_while_another_video_is_transferring(self):
+        ready_token = self.register_ready_copy()
+        self.hold_receive = True
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            cold = pool.submit(self.http.get, '/play/' + self.token, follow_redirects=False)
+            try:
+                self.assertTrue(self.receive_entered.wait(2), 'Cold playback did not reach 115 receive')
+                warm = pool.submit(self.http.get, '/play/' + ready_token, follow_redirects=False)
+                completed, _ = wait([warm], timeout=1)
+                self.assertIn(warm, completed, 'Ready virtual playback waited for an unrelated 115 transfer')
+                self.assertEqual(warm.result().status_code, 302, self.calls)
+                self.assertEqual(warm.result().headers['location'], LINK)
+            finally:
+                self.release_receive.set()
+            self.assertEqual(cold.result(2).status_code, 302)
+
+    def test_cold_playback_rechecks_visibility_without_receiving_twice(self):
+        self.hide_fresh_receive_once = True
+        response = self.http.get('/play/' + self.token, follow_redirects=False)
+        self.assertEqual(response.status_code, 302, self.calls)
+        self.assertEqual(self.calls.count(('webapi.115.com', '/share/receive')), 1)
+        self.assertEqual(self.calls.count(('proapi.115.com', '/android/2.0/ufile/files')), 3)
+        self.assertEqual(self.service.storage.copy('v_fixture')['stage'], 'READY')
+
+    def test_ready_virtual_with_missing_listing_sha1_uses_verified_file_detail(self):
+        ready_token = self.register_ready_copy()
+        self.omit_warm_sha1 = True
+        response = self.http.get('/play/' + ready_token, follow_redirects=False)
+        self.assertEqual(response.status_code, 302, self.calls)
+        self.assertEqual(self.calls, [('proapi.115.com', '/android/2.0/ufile/files'),
+                                      ('webapi.115.com', '/files/get_info')])
+
+    def test_ready_virtual_with_mismatched_file_detail_fails_without_receiving(self):
+        ready_token = self.register_ready_copy()
+        self.omit_warm_sha1 = True
+        self.warm_member['sha1'] = 'C' * 40
+        response = self.http.get('/play/' + ready_token, follow_redirects=False)
+        self.assertEqual(response.status_code, 503, self.calls)
+        self.assertEqual(self.calls, [('proapi.115.com', '/android/2.0/ufile/files'),
+                                      ('webapi.115.com', '/files/get_info')])
+        self.download.assert_not_called()
 
     def test_empty_copy_plays_when_web_directory_listing_times_out(self):
         response = self.http.get('/play/' + self.token, headers={'User-Agent': 'Player fixture'}, follow_redirects=False)
