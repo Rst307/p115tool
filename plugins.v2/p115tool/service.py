@@ -1,6 +1,6 @@
 """Personal-drive traversal and stable STRM mapping, with explicit storage tasks."""
 from pathlib import Path
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 import json
 import secrets
 import sqlite3
@@ -411,13 +411,27 @@ class Service:
             raise
         content=Path(output).read_bytes()
         if content.decode('utf-8').replace('\r\n','\n')!=self.config.playback_url(token)+'\n': raise SafetyError('Output changed')
-        self.query('INSERT INTO strm_output_proofs VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET file_id=excluded.file_id,digest=excluded.digest WHERE strm_output_proofs.file_id!=excluded.file_id OR strm_output_proofs.digest!=excluded.digest',
-            (output,fid,hashlib.sha256(content).hexdigest()))
-        if checkpoint: self.query("UPDATE strm_address_updates SET state='DONE' WHERE id=?",(checkpoint[0],))
-        if previous and previous['strm_path'] and previous['strm_path']!=output:
-            if self.relocate(fid,previous['strm_path'],output,token)=='DONE' and state is not None:
-                state['relocated']+=1
-        self.query('UPDATE strm_files SET strm_path=? WHERE file_id=? AND (strm_path IS NULL OR strm_path!=?)',(output,fid,output))
+        output_digest = hashlib.sha256(content).hexdigest()
+        previous_path = previous['strm_path'] if previous else None
+        proof_matches = proof and proof['file_id'] == fid and proof['digest'] == output_digest
+        if proof_matches and previous_path == output and not checkpoint:
+            return output
+        relocating = previous_path and previous_path != output
+        update_path = 'UPDATE strm_files SET strm_path=? WHERE file_id=? AND (strm_path IS NULL OR strm_path!=?)'
+        with self.transaction() as db:
+            if not proof_matches:
+                db.execute('INSERT INTO strm_output_proofs VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET file_id=excluded.file_id,digest=excluded.digest',
+                           (output, fid, output_digest))
+            if checkpoint:
+                db.execute("UPDATE strm_address_updates SET state='DONE' WHERE id=?", (checkpoint[0],))
+            if not relocating:
+                db.execute(update_path, (output, fid, output))
+        if relocating:
+            # Keep the new proof durable before removing the old STRM, and
+            # retain the old indexed path until that migration is recorded.
+            if self.relocate(fid, previous_path, output, token) == 'DONE' and state is not None:
+                state['relocated'] += 1
+            self.query(update_path, (output, fid, output))
         return output
 
     def legacy_loopback_digest(self,target,token):
@@ -437,15 +451,16 @@ class Service:
             return None
         return hashlib.sha256(content).hexdigest()
 
-    def register(self,file,path):
-        with self._lock:
-            row=self.query('SELECT * FROM strm_files WHERE file_id=?',(file.file_id,),one=True)
+    def register(self,file,path,*,db=None):
+        """Register a STRM mapping, optionally within its caller's transaction."""
+        with (self.transaction() if db is None else nullcontext(db)) as db:
+            row=db.execute('SELECT * FROM strm_files WHERE file_id=?',(file.file_id,)).fetchone()
             if row and (row['size']!=file.size or (row['sha1'] and file.sha1 and row['sha1']!=file.sha1)):
                 raise SafetyError('Source identity changed')
             token=row['token'] if row else secrets.token_urlsafe(32)
             if row and (row['pickcode'],row['name'],row['parent_id'],row['relative_path'])==(file.pickcode,file.name,file.parent_id,path) and (not file.sha1 or row['sha1']==file.sha1):
                 return token
-            self.query('''INSERT INTO strm_files VALUES(?,?,?,?,?,?,?,?,NULL)
+            db.execute('''INSERT INTO strm_files VALUES(?,?,?,?,?,?,?,?,NULL)
                 ON CONFLICT(file_id) DO UPDATE SET pickcode=excluded.pickcode,name=excluded.name,
                 sha1=CASE WHEN excluded.sha1='' THEN strm_files.sha1 ELSE excluded.sha1 END,parent_id=excluded.parent_id,relative_path=excluded.relative_path''',
                 (file.file_id,token,file.pickcode,file.name,file.size,file.sha1,file.parent_id,path))

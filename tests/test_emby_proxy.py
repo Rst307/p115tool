@@ -1,5 +1,7 @@
+import asyncio
 import json
 import socket
+import threading
 import unittest
 
 import httpx
@@ -158,6 +160,55 @@ class EmbyProxyTests(unittest.TestCase):
             pb = client.post('/emby/Items/42/PlaybackInfo', headers={'User-Agent': 'SenPlayer/2.0'})
         self.assertEqual(pb.status_code, 200)
         self.assertEqual(pb.json()['MediaSources'][0]['Path'], lan_url)
+
+    def test_overlapping_stream_head_and_get_share_one_link_lookup(self):
+        service = FakeService()
+        lan_url = f'http://moviepilot.test/api/v1/plugin/P115Tool/play/{TOKEN}'
+        path = '/emby/Videos/42/stream'
+        original_play = service.play
+
+        async def exercise():
+            loop = asyncio.get_running_loop()
+            head_resolving = asyncio.Event()
+            get_entered = asyncio.Event()
+            release = threading.Event()
+
+            def play(token, ua):
+                loop.call_soon_threadsafe(head_resolving.set)
+                if not release.wait(4):
+                    raise TimeoutError('Fixture lookup was not released')
+                return original_play(token, ua)
+
+            service.play = play
+            upstream = httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, json={'MediaSources': [{'Id': 'ms-1', 'Path': lan_url}]})))
+            app = build_proxy_app(service, 'http://emby.test', upstream_client=upstream)
+
+            async def observed(scope, receive, send):
+                if scope['method'] == 'GET' and scope['path'] == path:
+                    get_entered.set()
+                await app(scope, receive, send)
+
+            async with app.router.lifespan_context(app), httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=observed), base_url='http://proxy.test',
+                headers={'User-Agent': 'Player fixture'},
+            ) as client:
+                await client.post('/emby/Items/42/PlaybackInfo')
+                head = asyncio.create_task(client.head(path))
+                try:
+                    await asyncio.wait_for(head_resolving.wait(), 2)
+                    get = asyncio.create_task(client.get(path))
+                    await asyncio.wait_for(get_entered.wait(), 2)
+                finally:
+                    release.set()
+                for response in await asyncio.gather(head, get):
+                    self.assertEqual(response.status_code, 302)
+                    self.assertEqual(response.headers['location'], DIRECT_LINK)
+                self.assertEqual(service.calls, [(TOKEN, 'Player fixture')])
+                self.assertEqual((await client.get(path)).status_code, 302)
+                self.assertEqual(len(service.calls), 2)
+
+        asyncio.run(exercise())
 
     def test_proxy_server_starts_and_closes_cleanly(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:

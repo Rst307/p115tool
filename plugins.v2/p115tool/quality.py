@@ -75,9 +75,12 @@ class VirtualUpgrades:
                 changed_at REAL NOT NULL);''')
 
     def remember(self, media_id, destination, source):
-        identity, rank = metadata(destination, source)
-        self.service.query('INSERT OR IGNORE INTO virtual_editions VALUES(?,?,?,?)',
-                           (media_id, media_id, identity, json.dumps(rank)))
+        with self.service.transaction() as db:
+            if db.execute('SELECT 1 FROM virtual_editions WHERE media_id=?', (media_id,)).fetchone():
+                return
+            identity, rank = metadata(destination, source)
+            db.execute('INSERT INTO virtual_editions VALUES(?,?,?,?)',
+                       (media_id, media_id, identity, json.dumps(rank)))
 
     def index_existing(self):
         rows = self.service.query("SELECT f.* FROM strm_files f JOIN resource_storage s ON s.media_id=f.file_id "

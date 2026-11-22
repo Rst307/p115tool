@@ -12,12 +12,11 @@ from urllib.parse import urlsplit
 import httpx
 import uvicorn
 from starlette.applications import Starlette
-from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
 from starlette.routing import Route
 
-from .api import TOKEN_RE, log_failure
+from .api import PlaybackResolver, TOKEN_RE
 from .models import PLUGIN_VERSION
 
 try:
@@ -34,8 +33,6 @@ PLAYBACK_INFO_RE = re.compile(r'^(?:/emby)?/Items/([^/]+)/PlaybackInfo$', re.IGN
 STREAM_RE = re.compile(r'^(?:/emby)?/Videos/([^/]+)/(?:stream(?:\.[^/]+)?|original(?:\.[^/]+)?)$', re.IGNORECASE)
 SOURCE_CACHE_TTL = 1800.0
 SOURCE_CACHE_MAX = 2048
-PREFETCH_TTL = 30.0
-PREFETCH_MAX = 128
 
 
 def extract_plugin_token(path_value, playback_prefix):
@@ -63,14 +60,6 @@ def build_proxy_app(service, emby_url, direct_path=False, upstream_client=None):
     playback_prefix = service.config.playback_prefix
     source_tokens = {}      # (item_id, media_source_id) -> (token, expires_at)
     item_tokens = {}        # item_id -> (token, expires_at)
-    stream_head_relay = {}  # (token, ua) -> (location, expires_at)
-
-    def remember_stream_head(token, ua, location):
-        now = time.monotonic()
-        if len(stream_head_relay) >= PREFETCH_MAX and (token, ua) not in stream_head_relay:
-            for k in [k for k, v in stream_head_relay.items() if now >= v[1]]:
-                stream_head_relay.pop(k, None)
-        stream_head_relay[(token, ua)] = (location, now + 15.0)
 
     def remember_token(item_id, media_source_id, token):
         now = time.monotonic()
@@ -189,26 +178,11 @@ def build_proxy_app(service, emby_url, direct_path=False, upstream_client=None):
         ua = request.headers.get('user-agent', '')
         if len(ua) > 1024 or any(ord(c) < 32 for c in ua):
             return Response(status_code=400, content='Invalid request')
-        started = time.monotonic()
-        location = None
-        if request.method == 'GET':
-            relayed = stream_head_relay.pop((token, ua), None)
-            if relayed is not None and time.monotonic() < relayed[1]:
-                location = relayed[0]
-        if location:
-            elapsed = (time.monotonic() - started) * 1000
-            logger.info(f'[v{PLUGIN_VERSION}] 115 Emby本地代理：stream复用HEAD直链返回302，耗时={elapsed:.1f}ms')
-        else:
-            try:
-                location = await run_in_threadpool(service.play, token, ua)
-            except Exception as exc:
-                log_failure(exc)
-                logger.warning(f'[v{PLUGIN_VERSION}] 115 Emby本地代理：stream 302取链失败，回退至Emby上游')
-                return await forward_streaming(request, client)
-            if request.method == 'HEAD':
-                remember_stream_head(token, ua, location)
-            elapsed = (time.monotonic() - started) * 1000
-            logger.info(f'[v{PLUGIN_VERSION}] 115 Emby本地代理：stream 302直链返回，耗时={elapsed:.1f}ms')
+        status, location, elapsed = await request.app.state.playback_resolver.resolve(service, token, ua, request.method)
+        if status != 302:
+            logger.warning(f'[v{PLUGIN_VERSION}] 115 Emby本地代理：stream 302取链失败，回退至Emby上游')
+            return await forward_streaming(request, client)
+        logger.info(f'[v{PLUGIN_VERSION}] 115 Emby本地代理：stream 302直链返回，耗时={elapsed:.1f}ms')
         return Response(
             status_code=302,
             headers={
@@ -265,6 +239,7 @@ def build_proxy_app(service, emby_url, direct_path=False, upstream_client=None):
 
     @asynccontextmanager
     async def lifespan(starlette_app):
+        starlette_app.state.playback_resolver = PlaybackResolver()
         if upstream_client is not None:
             starlette_app.state.client = upstream_client
             owns_client = False
@@ -277,7 +252,7 @@ def build_proxy_app(service, emby_url, direct_path=False, upstream_client=None):
         try:
             yield
         finally:
-            stream_head_relay.clear()
+            del starlette_app.state.playback_resolver
             if owns_client:
                 await starlette_app.state.client.aclose()
 

@@ -179,8 +179,8 @@ class StorageManager:
         self._import_progress(value)
 
     def _progress(self, value):
-        # Live phases do not need a disk fsync: remote-write checkpoints and
-        # completed-file counts remain independently durable before continuing.
+        # Live phases need no fsync. Writes that protect remote operations or
+        # completed STRMs are committed separately from the progress snapshot.
         self._live_job={**value,'results':list(value.get('results',[]))}
         self._import_progress(value)
 
@@ -595,6 +595,7 @@ class StorageManager:
         job.update(upgraded=0,skipped=0)
         job['phase']='IMPORTING';job['total']=len(files);self._progress(job)
         digest=hashlib.sha256(code.encode()).hexdigest()[:24]
+        last_saved = time.monotonic()
         for file,relative in files:
             if self.service._stop.is_set(): raise InterruptedError()
             media_id='v_'+digest+'_'+file.file_id
@@ -611,21 +612,27 @@ class StorageManager:
                 if self.service._stop.is_set(): raise InterruptedError()
                 outcome=self.upgrades.consider(media_id,file,destination,relative,code,password,auto_upgrade,members)
                 if outcome:
-                    job[outcome]+=1;job['done']+=1;self._job(job)
-                    continue
-                record=RemoteFile(media_id,file.name,file.size,file.sha1,'0','',is_dir=False)
-                self.service.register(record,destination)
-                self.service.query("INSERT INTO resource_storage(media_id,kind,stage,share_code,password,share_fid) "
-                    "VALUES(?,'VIRTUAL','READY',?,?,?) ON CONFLICT(media_id) DO UPDATE SET password=excluded.password",
-                    (media_id,code,password,file.file_id))
-                row=self.row(media_id)
-                self.service.write_output(media_id,row['relative_path'],row['token'])
-                self.upgrades.remember(media_id,destination,relative)
+                    job[outcome]+=1
+                else:
+                    record=RemoteFile(media_id,file.name,file.size,file.sha1,'0','',is_dir=False)
+                    with self.service.transaction() as db:
+                        token = self.service.register(record,destination,db=db)
+                        if not existing or existing['password'] != password:
+                            db.execute("INSERT INTO resource_storage(media_id,kind,stage,share_code,password,share_fid) "
+                                       "VALUES(?,'VIRTUAL','READY',?,?,?) ON CONFLICT(media_id) DO UPDATE SET password=excluded.password",
+                                       (media_id,code,password,file.file_id))
+                    self.service.write_output(media_id,destination,token)
+                    self.upgrades.remember(media_id,destination,relative)
                 job['done']+=1
             except InterruptedError: raise
             except Exception:
                 job['failed']+=1;job['error']='VIRTUAL_ORGANIZE_FAILED'
-            self._job(job)
+            now = time.monotonic()
+            if now - last_saved >= 1:
+                self._job(job)
+                last_saved = now
+            else:
+                self._progress(job)
 
     def verify_share(self, row):
         candidates=[file for file,_ in self.share_tree(row['share_code'],row['password']) if matches(file,row)]

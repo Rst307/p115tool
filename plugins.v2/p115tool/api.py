@@ -141,22 +141,65 @@ async def resolve_playback(service, token, ua, rid='-'):
     return status, location, elapsed
 
 
+class PlaybackResolver:
+    """Share in-flight 302 lookups and relay a HEAD result to its paired GET."""
+
+    def __init__(self):
+        self._pending = {}
+        self._head_relay = {}
+
+    def _forget(self, key, finished):
+        if self._pending.get(key) is finished:
+            self._pending.pop(key)
+
+    def _remember_head(self, key, rid, location, now):
+        relay = self._head_relay
+        if len(relay) >= HEAD_RELAY_MAX and key not in relay:
+            for k in [k for k, v in relay.items() if now >= v[2]]:
+                relay.pop(k, None)
+            if len(relay) >= HEAD_RELAY_MAX:
+                oldest = min(relay.items(), key=lambda item: item[1][2])[0]
+                relay.pop(oldest, None)
+        relay[key] = (rid, location, now + HEAD_RELAY_TTL)
+
+    async def resolve(self, service, token, ua, method):
+        loop = asyncio.get_running_loop()
+        key = (loop, id(service), token, ua)
+        if method == 'GET':
+            relayed = self._head_relay.pop(key, None)
+            if relayed is not None and loop.time() < relayed[2]:
+                rid, location, _ = relayed
+                logger.info(f'115播放[{rid}] 复用HEAD预热直链：方法=GET')
+                return 302, location, 0.0
+        task = self._pending.get(key)
+        stale = (task is not None and not task.done()
+                 and loop.time() - getattr(task, '_p115_started', loop.time()) >= SINGLEFLIGHT_MAX_AGE)
+        if stale:
+            old_rid = getattr(task, '_p115_rid', '-')
+            logger.warning(f'115播放[{old_rid}] 在途解析已超过 {SINGLEFLIGHT_MAX_AGE} 秒，新请求不再复用该任务')
+        if task is None or task.done() or stale:
+            rid = secrets.token_hex(4)
+            logger.info(f'115播放[{rid}] 开始解析：方法={method}，UA长度={len(ua)}')
+            task = asyncio.create_task(resolve_playback(service, token, ua, rid=rid))
+            task._p115_rid = rid
+            task._p115_started = loop.time()
+            task._p115_has_get = (method == 'GET')
+            self._pending[key] = task
+            task.add_done_callback(partial(self._forget, key))
+        else:
+            rid = getattr(task, '_p115_rid', '-')
+            if method == 'GET':
+                task._p115_has_get = True
+            logger.info(f'115播放[{rid}] 复用在途解析：方法={method}')
+        # A disconnected player must not cancel an in-progress copy or kick off another one.
+        status, location, elapsed = await asyncio.shield(task)
+        if method == 'HEAD' and status == 302 and not getattr(task, '_p115_has_get', False):
+            self._remember_head(key, rid, location, loop.time())
+        return status, location, elapsed
+
+
 def routes(plugin):
-    pending = {}
-    head_relay = {}
-
-    def forget(key, finished):
-        if pending.get(key) is finished:
-            pending.pop(key)
-
-    def remember_head(key, rid, location, now):
-        if len(head_relay) >= HEAD_RELAY_MAX and key not in head_relay:
-            for k in [k for k, v in head_relay.items() if now >= v[2]]:
-                head_relay.pop(k, None)
-            if len(head_relay) >= HEAD_RELAY_MAX:
-                oldest = min(head_relay.items(), key=lambda item: item[1][2])[0]
-                head_relay.pop(oldest, None)
-        head_relay[key] = (rid, location, now + HEAD_RELAY_TTL)
+    resolver = PlaybackResolver()
 
     async def play(request: Request):
         method = request.method if request.method in ('GET', 'HEAD') else 'OTHER'
@@ -176,40 +219,7 @@ def routes(plugin):
         if getattr(service, '_closed', False):
             log_failure(ToolError('Service stopped'))
             raise HTTPException(503, 'Playback unavailable')
-        loop = asyncio.get_running_loop()
-        key = (loop, id(service), token, ua)
-        if method == 'GET':
-            relayed = head_relay.pop(key, None)
-            if relayed is not None and loop.time() < relayed[2]:
-                rid, location, _ = relayed
-                logger.info(f'115播放[{rid}] 复用HEAD预热直链：方法=GET')
-                headers = {'Cache-Control': 'no-store', 'Server-Timing': 'p115-resolve;dur=0.0',
-                           'Location': location, 'Referrer-Policy': 'no-referrer'}
-                return Response(status_code=302, headers=headers)
-        task = pending.get(key)
-        stale = (task is not None and not task.done()
-                 and loop.time() - getattr(task, '_p115_started', loop.time()) >= SINGLEFLIGHT_MAX_AGE)
-        if stale:
-            old_rid = getattr(task, '_p115_rid', '-')
-            logger.warning(f'115播放[{old_rid}] 在途解析已超过 {SINGLEFLIGHT_MAX_AGE} 秒，新请求不再复用该任务')
-        if task is None or task.done() or stale:
-            rid = secrets.token_hex(4)
-            logger.info(f'115播放[{rid}] 开始解析：方法={method}，UA长度={len(ua)}')
-            task = asyncio.create_task(resolve_playback(service, token, ua, rid=rid))
-            task._p115_rid = rid
-            task._p115_started = loop.time()
-            task._p115_has_get = (method == 'GET')
-            pending[key] = task
-            task.add_done_callback(partial(forget, key))
-        else:
-            rid = getattr(task, '_p115_rid', '-')
-            if method == 'GET':
-                task._p115_has_get = True
-            logger.info(f'115播放[{rid}] 复用在途解析：方法={method}')
-        # A disconnected player must not cancel an in-progress copy or kick off another one.
-        status, location, elapsed = await asyncio.shield(task)
-        if method == 'HEAD' and status == 302 and not getattr(task, '_p115_has_get', False):
-            remember_head(key, rid, location, loop.time())
+        status, location, elapsed = await resolver.resolve(service, token, ua, method)
         headers = {'Cache-Control': 'no-store', 'Server-Timing': f'p115-resolve;dur={elapsed:.1f}'}
         if status != 302:
             raise HTTPException(status, 'Playback unavailable', headers=headers)
